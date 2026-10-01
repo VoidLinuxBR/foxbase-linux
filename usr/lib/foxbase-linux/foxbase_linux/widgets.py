@@ -1,9 +1,23 @@
-"""Widgets modais: leitura de teclas, campo de edição, diálogos, editor de registro."""
+"""Widgets modais: leitura de teclas, campo de edição e diálogos."""
 
 import curses
 
 from . import ui
-from .dbf import DBFError
+
+
+# Teclas com Ctrl que o curses não tem como constante própria
+CTRL_END = 0x10001
+CTRL_HOME = 0x10002
+CTRL_LEFT = 0x10003
+CTRL_RIGHT = 0x10004
+CTRL_PGUP = 0x10005
+CTRL_PGDN = 0x10006
+
+KEYNAMES = {
+    b"kEND5": CTRL_END, b"kHOM5": CTRL_HOME,
+    b"kLFT5": CTRL_LEFT, b"kRIT5": CTRL_RIGHT,
+    b"kPRV5": CTRL_PGUP, b"kNXT5": CTRL_PGDN,
+}
 
 
 def read_key(stdscr):
@@ -24,6 +38,12 @@ def read_key(stdscr):
             return _read_escape(stdscr)
         if code < 32 or code == 127:
             return code
+        return ch
+    if isinstance(ch, int) and ch > 255:
+        try:
+            return KEYNAMES.get(curses.keyname(ch), ch)
+        except ValueError:
+            return ch
     return ch
 
 
@@ -47,6 +67,10 @@ ESCAPE_KEYS = {
     "[18~": curses.KEY_F7, "[19~": curses.KEY_F8,
     "[20~": curses.KEY_F9, "[21~": curses.KEY_F10,
     "[Z": curses.KEY_BTAB,
+    "[1;5F": CTRL_END, "[4;5~": CTRL_END, "[8^": CTRL_END, "[4^": CTRL_END,
+    "[1;5H": CTRL_HOME, "[1;5~": CTRL_HOME, "[7^": CTRL_HOME,
+    "[1;5D": CTRL_LEFT, "[1;5C": CTRL_RIGHT, "Od": CTRL_LEFT, "Oc": CTRL_RIGHT,
+    "[5;5~": CTRL_PGUP, "[6;5~": CTRL_PGDN,
 }
 
 
@@ -55,7 +79,7 @@ def _read_escape(stdscr):
     stdscr.nodelay(True)
     seq = ""
     try:
-        while len(seq) < 6:
+        while len(seq) < 7:
             try:
                 ch = stdscr.get_wch()
             except curses.error:
@@ -210,114 +234,3 @@ def confirm(stdscr, text, title="FoxBASE+"):
             return True
         if ch == 27 or (isinstance(ch, str) and ch.upper() == "N"):
             return False
-
-
-def record_editor(stdscr, dbf, index, title):
-    """Tela EDIT de um registro. Retorna True se gravou."""
-    values = list(dbf.records[index]["values"])
-    field_index = 0
-    top = 0
-    changed = False
-    error = ""
-
-    while True:
-        h, w = stdscr.getmaxyx()
-        name_w = 11
-        val_w = max(dbf.display_width(f) for f in dbf.fields)
-        width = min(w - 2, max(64, name_w + val_w + 12))
-        height = min(h - 2, len(dbf.fields) + 5)
-        y = max(1, (h - height) // 2)
-        x = max(0, (w - width) // 2)
-        rows = height - 5
-        field_w = width - name_w - 8
-
-        if field_index < top:
-            top = field_index
-        elif field_index >= top + rows:
-            top = field_index - rows + 1
-
-        deleted = " *DEL*" if dbf.records[index]["deleted"] else ""
-        ui.box(stdscr, y, x, height, width,
-               f"{title}  Rec {index + 1}/{dbf.record_count}{deleted}", clear=True)
-
-        for row in range(rows):
-            fi = top + row
-            if fi >= len(dbf.fields):
-                break
-            field = dbf.fields[fi]
-            shown = dbf.display_value(field, values[fi])
-            fw = min(dbf.display_width(field), field_w)
-            name_attr = curses.A_BOLD if fi == field_index else 0
-            ui.put(stdscr, y + 1 + row, x + 2, f"{field['name']:<{name_w}}", name_attr)
-            ui.put(stdscr, y + 1 + row, x + 3 + name_w, field["type"],
-                   curses.color_pair(ui.C_DISABLED))
-            ui.put(stdscr, y + 1 + row, x + 5 + name_w, shown[:fw].ljust(fw),
-                   curses.color_pair(ui.C_REVERSE) if fi == field_index
-                   else curses.A_UNDERLINE)
-
-        if error:
-            ui.put(stdscr, y + height - 3, x + 2, error[:width - 4],
-                   curses.color_pair(ui.C_ERROR))
-        ui.put(stdscr, y + height - 2, x + 2,
-               "Enter edit  ↑↓ field  PgUp/PgDn rec  Ctrl-W save  Esc cancel"[:width - 4],
-               curses.color_pair(ui.C_DISABLED))
-
-        curses.curs_set(0)
-        stdscr.refresh()
-        ch = read_key(stdscr)
-        if ch is None or ch == curses.KEY_RESIZE:
-            continue
-
-        if ch == 27:
-            if changed and confirm(stdscr, "Discard changes?") is False:
-                continue
-            return False
-
-        if ch in (curses.KEY_UP, curses.KEY_BTAB):
-            field_index = max(0, field_index - 1)
-        elif ch in (curses.KEY_DOWN, 9):
-            field_index = min(len(dbf.fields) - 1, field_index + 1)
-        elif ch == curses.KEY_HOME:
-            field_index = 0
-        elif ch == curses.KEY_END:
-            field_index = len(dbf.fields) - 1
-        elif ch in (23, curses.KEY_F2):  # Ctrl-W / F2
-            dbf.records[index]["values"] = values
-            dbf.save()
-            return True
-        elif ch in (curses.KEY_PPAGE, curses.KEY_NPAGE):
-            if changed:
-                dbf.records[index]["values"] = values
-                dbf.save()
-            step = -1 if ch == curses.KEY_PPAGE else 1
-            new_index = index + step
-            if 0 <= new_index < dbf.record_count:
-                index = new_index
-                values = list(dbf.records[index]["values"])
-                changed = False
-            error = ""
-        elif is_enter(ch) or isinstance(ch, str):
-            field = dbf.fields[field_index]
-            if field["type"] not in ("C", "N", "F", "D", "L"):
-                error = f"{field['name']}: memo/binary fields are read-only."
-                continue
-            row = field_index - top
-            current = dbf.display_value(field, values[field_index]).rstrip()
-            if field["type"] == "D" and not values[field_index]:
-                current = ""
-            if field["type"] == "L" and current == "?":
-                current = ""
-            if isinstance(ch, str):  # começa a digitar direto substituindo
-                current = ch
-            fw = min(dbf.display_width(field), field_w)
-            text = line_input(stdscr, y + 1 + row, x + 5 + name_w, fw,
-                              current, maxlen=dbf.display_width(field))
-            if text is None:
-                continue
-            try:
-                values[field_index] = dbf.validate(field, text)
-                changed = True
-                error = ""
-                field_index = min(len(dbf.fields) - 1, field_index + 1)
-            except DBFError as exc:
-                error = str(exc)

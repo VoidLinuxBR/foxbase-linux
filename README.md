@@ -49,11 +49,27 @@ F4        estrutura      Ctrl-Q sair
 F5        compilar/rodar o programa do editor (Harbour)
 ```
 
-**BROWSE:** ↑↓ PgUp PgDn Home End · ←→ rola colunas · Enter edita ·
-Ctrl-T/Ctrl-U/Del marca/desmarca exclusão · F9/Ctrl-N novo registro · Esc sai
+As telas de criação e edição seguem o FoxBASE+ / dBASE III PLUS: caixa de ajuda no
+topo (F1 mostra/esconde), barra de status (modo, arquivo, registro, `Del`, `Ins`) e
+linha de mensagens embaixo. Digitar sobrescreve (Ins alterna para inserção) e, ao
+encher o campo, o cursor passa sozinho para o próximo, com bipe.
 
-**EDIT:** ↑↓/Tab muda de campo · Enter (ou começar a digitar) edita ·
-PgUp/PgDn registro anterior/próximo · Ctrl-W ou F2 grava · Esc cancela
+**CREATE / MODIFY STRUCTURE:** campos em duas colunas (Field Name, Type, Width, Dec)
+e "Bytes remaining". Tipo pela barra de espaço ou pela letra (C, N, D, L); Date e
+Logical têm largura fixa. ^N insere campo, ^U remove, ^End grava ("Press ENTER to
+confirm. Any other key to resume"), Esc abandona; Enter num nome em branco no fim
+também grava. Depois do CREATE: "Input data records now? (Y/N)". O MODIFY STRUCTURE
+guarda o original em `.BAK` e copia os dados pelos nomes dos campos.
+
+**EDIT / CHANGE / APPEND:** todos os campos do registro na tela. Enter/↓ próximo
+campo, ↑ anterior, Home/End palavra, PgDn/PgUp próximo/anterior registro, ^U marca
+exclusão, ^Y apaga o campo, ^End (ou ^W) grava e sai, Esc sai sem gravar o registro
+atual. No APPEND, Enter no primeiro campo de um registro em branco encerra (registro
+em branco não é gravado).
+
+**BROWSE:** edição direto na grade. ↑↓ registro, Enter/Tab/End próximo campo, Home
+campo anterior, ^← ^→ rola as colunas, PgUp/PgDn página, ↓ no último registro
+pergunta "Add new records? (Y/N)", ^U marca exclusão, ^End grava e sai, Esc sai.
 
 **Editor:** setas, Home/End, PgUp/PgDn, Del, Backspace junta linhas,
 Ctrl-Y apaga linha, Tab, F2 grava (pede nome se novo), F5 roda, Esc volta
@@ -64,6 +80,7 @@ Ctrl-Y apaga linha, Tab, F2 grava (pede nome se novo), F5 roda, Esc volta
 
 ```text
 USE [arquivo]            CLOSE DATABASES          CREATE arquivo
+MODIFY STRUCTURE
 BROWSE                   EDIT / CHANGE [n]        APPEND [BLANK]
 LIST [FOR cond]          DISPLAY [ALL]            DISPLAY STRUCTURE
 LIST MEMORY
@@ -94,7 +111,8 @@ Datas no formato `dd/mm/aaaa` (SET DATE BRITISH).
 
 ```text
 . CREATE clientes
-    (campos: CODIGO,N,5  NOME,C,30  CIDADE,C,20  NASC,D  LIMITE,N,10,2  ATIVO,L)
+    (na tela de estrutura: CODIGO N 5, NOME C 30, CIDADE C 20, NASC D,
+     LIMITE N 10 2, ATIVO L; ^End, Enter, e "Input data records now?" -> N)
 . APPEND BLANK
 . REPLACE codigo WITH 1, nome WITH 'João', nasc WITH CTOD('15/03/1980'), ativo WITH .T.
 . LIST FOR cidade = 'Porto'

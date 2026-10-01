@@ -2,7 +2,7 @@
 
 pkgname=foxbase-linux
 pkgdesc="FoxBASE Linux - ambiente xBase em terminal inspirado no FoxBASE+ para DOS (DBF, BROWSE, PRG)"
-pkgver=0.1.0   # = APP_VERSION (usr/lib/foxbase-linux/foxbase_linux/__init__.py); atualizar a cada release
+pkgver=0.2.0   # = APP_VERSION (usr/lib/foxbase-linux/foxbase_linux/__init__.py); atualizar a cada release
 pkgrel=1
 arch=('any')
 license=('MIT')

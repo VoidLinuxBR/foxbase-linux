@@ -9,6 +9,13 @@
 #   Licença: MIT
 #
 #   ChangeLog:
+#   - v0.2.0 (2026-10-01): criação e edição no padrão FoxBASE+/dBASE III PLUS:
+#     CREATE e MODIFY STRUCTURE em tela cheia (Field Name/Type/Width/Dec em duas
+#     colunas, "Bytes remaining", tipo pela barra de espaço ou letra, ^N/^U, ^End com
+#     "Press ENTER to confirm", "Input data records now? (Y/N)", .BAK no MODIFY);
+#     EDIT/CHANGE/APPEND em tela cheia (sobrescrever/Ins, campo cheio avança com bipe,
+#     data com barras fixas, PgUp/PgDn, ^U, ^Y, ^End, Esc); BROWSE com edição direto
+#     na grade, ^←/^→ e "Add new records? (Y/N)"; caixa de ajuda (F1) e barra de status.
 #   - v0.1.0 (2026-09-30): Versão inicial — ambiente xBase em curses: Command
 #     Window com comandos xBase (USE, CREATE, BROWSE, EDIT, APPEND, LIST, REPLACE,
 #     LOCATE, DELETE/PACK, COUNT/SUM, ?, DO, RUN...), avaliador de expressões,

@@ -12,7 +12,7 @@ from .widgets import LineEdit
 
 HELP_TEXT = """\
 Commands (abbreviations of 4+ letters are accepted, e.g. BROW, DISP STRU):
-  USE [file]              CLOSE DATABASES        CREATE file
+  USE [file]              CLOSE DATABASES        CREATE file  MODIFY STRUCTURE
   BROWSE                  EDIT / CHANGE [n]      APPEND [BLANK]
   LIST [ALL] [FOR cond]   DISPLAY [ALL]          DISPLAY STRUCTURE
   GO n | GO TOP | GO BOTTOM | n                  SKIP [n]
@@ -198,7 +198,7 @@ class CommandWindow:
         elif kw(verb, "EDIT") or kw(verb, "CHANGE"):
             if rest.isdigit():
                 app.goto(int(rest), quiet=True)
-            app.edit_current()
+            app.edit_current("CHANGE" if kw(verb, "CHANGE") else "EDIT")
         elif kw(verb, "APPEND"):
             app.append_blank(edit=not kw(rest_up, "BLANK"))
         elif kw(verb, "DISPLAY") or kw(verb, "LIST"):
@@ -257,7 +257,7 @@ class CommandWindow:
             if parts and kw(parts[0], "COMMAND"):
                 app.modify_command(parts[1] if len(parts) > 1 else None)
             elif parts and kw(parts[0], "STRUCTURE"):
-                self.write("MODIFY STRUCTURE is not supported; use CREATE.")
+                app.modify_structure()
             else:
                 self.write("Syntax: MODIFY COMMAND file")
         elif verb == "DO":
