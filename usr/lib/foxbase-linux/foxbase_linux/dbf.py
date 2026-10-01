@@ -70,8 +70,12 @@ class DBF:
 
     # ------------------------------------------------------------ create
     @classmethod
-    def create(cls, filename, fields):
-        """fields: lista de dicts {name, type, length, decimals}."""
+    def create(cls, filename, fields, allow_memo=False):
+        """fields: lista de dicts {name, type, length, decimals}.
+
+        allow_memo: aceita campos M já existentes (MODIFY STRUCTURE); o .DBT
+        original continua sendo usado.
+        """
         filename = Path(filename)
         if not fields:
             raise DBFError("Structure has no fields.")
@@ -89,9 +93,11 @@ class DBF:
             field["name"] = name
             kind = field["type"].upper()
             field["type"] = kind
-            if kind not in VALID_CREATE_TYPES:
+            if kind not in VALID_CREATE_TYPES and not (allow_memo and kind == "M"):
                 raise DBFError(f"Bad field type: {kind}")
-            if kind == "D":
+            if kind == "M":
+                field["length"], field["decimals"] = 10, 0
+            elif kind == "D":
                 field["length"], field["decimals"] = 8, 0
             elif kind == "L":
                 field["length"], field["decimals"] = 1, 0
@@ -110,7 +116,7 @@ class DBF:
         today = date.today()
 
         header = bytearray(32)
-        header[0] = 0x03
+        header[0] = 0x83 if any(f["type"] == "M" for f in fields) else 0x03
         header[1] = today.year - 1900
         header[2] = today.month
         header[3] = today.day

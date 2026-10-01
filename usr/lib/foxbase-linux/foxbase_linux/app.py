@@ -2,8 +2,10 @@ import curses
 import os
 from pathlib import Path
 
-from . import APP_VERSION, runner, ui, widgets
+from . import APP_VERSION, runner, screen, ui, widgets
 from .browser import Browser
+from .form import append_records, edit_record
+from .structure import create_structure, modify_structure
 from .command import CommandWindow
 from .dbf import DBF, DBFError
 from .editor import Editor
@@ -21,6 +23,8 @@ class FoxBaseApp:
         self.current_record = 0
         self.eof = False
         self.memvars = {}
+        self.insert_mode = False  # Ins: sobrescrever (padrão) / inserir
+        self.show_help = True     # F1: caixa de ajuda das telas cheias
 
         ui.init_colors()
         curses.noecho()
@@ -47,6 +51,7 @@ class FoxBaseApp:
                 ("File", [
                     ("Use database...", self.open_dbf_prompt, "F2"),
                     ("Create database...", lambda: self.create_dbf(None)),
+                    ("Modify structure", self.modify_structure),
                     ("Close database", self.close_dbf),
                     ("Open program...", self.open_program_prompt),
                     ("New program", self.new_program),
@@ -140,8 +145,6 @@ class FoxBaseApp:
         if self.view == "command":
             ui.box(self.stdscr, 1, 0, h - 2, w, "Command")
             cursor = self.command.draw(self.stdscr)
-        elif self.view == "browser":
-            cursor = self.browser.draw(self.stdscr)
         elif self.view == "editor":
             ui.box(self.stdscr, 1, 0, h - 2, w, self.editor.title)
             cursor = self.editor.draw(self.stdscr)
@@ -212,8 +215,6 @@ class FoxBaseApp:
 
         if self.view == "command":
             self.command.key(ch)
-        elif self.view == "browser":
-            self.browser.key(ch)
         elif self.view == "editor":
             self.editor.key(ch)
 
@@ -231,11 +232,9 @@ class FoxBaseApp:
             self.command.write("No database is in use.")
             self.show_command()
             return
-        if self.current_record >= self.current_dbf.record_count:
-            self.current_record = max(0, self.current_dbf.record_count - 1)
-        self.eof = False
-        self.view = "browser"
-        self.status = "Browse"
+        self.show_command()
+        self.browser.run()
+        self.stdscr.clear()
 
     # -------------------------------------------------------- database
     def _resolve_dbf(self, filename):
@@ -280,8 +279,6 @@ class FoxBaseApp:
         self.current_dbf_path = None
         self.current_record = 0
         self.eof = False
-        if self.view == "browser":
-            self.show_command()
         self.status = "Ready"
 
     def create_dbf(self, filename):
@@ -297,56 +294,27 @@ class FoxBaseApp:
             self.draw()
             if not widgets.confirm(self.stdscr, f"{path.name} already exists. Overwrite?"):
                 return
-
-        fields = []
-        while True:
-            n = len(fields) + 1
-            spec = self.ask(
-                f"Field {n} as NAME,TYPE,WIDTH,DEC  (ex: NOME,C,30) - empty ends",
-                "",
-            )
-            if spec is None:
-                self.command.write("CREATE cancelled.")
-                return
-            if not spec:
-                break
-            parts = [p.strip() for p in spec.split(",")]
-            try:
-                name = parts[0]
-                kind = (parts[1] if len(parts) > 1 else "C").upper()[:1]
-                default_len = {"D": 8, "L": 1, "N": 10}.get(kind, 10)
-                length = int(parts[2]) if len(parts) > 2 and parts[2] else default_len
-                dec = int(parts[3]) if len(parts) > 3 and parts[3] else 0
-            except ValueError:
-                self.error("Width and decimals must be numbers.")
-                continue
-            fields.append({"name": name, "type": kind, "length": length, "decimals": dec})
-            try:
-                # valida a estrutura parcial cedo, sem gravar
-                self._check_fields(fields)
-            except DBFError as exc:
-                fields.pop()
-                self.error(str(exc))
-                continue
-            self.command.write(f"  {n:>3} {name.upper():<10} {kind} {length:>4} {dec:>3}")
-
-        if not fields:
-            self.command.write("CREATE cancelled (no fields).")
+        dbf = create_structure(self, path)
+        self.stdscr.clear()
+        if dbf is None:
             return
-        try:
-            DBF.create(path, fields)
-        except DBFError as exc:
-            self.command.write(f"Error: {exc}")
-            return
-        self.command.write(f"{path.name} created.")
         self.open_dbf(str(path))
+        self.draw()
+        if screen.ask_yn(self.stdscr, widgets.read_key, "Input data records now? (Y/N)"):
+            append_records(self)
+            self.stdscr.clear()
 
-    @staticmethod
-    def _check_fields(fields):
-        import copy
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            DBF.create(Path(tmp) / "check.dbf", copy.deepcopy(fields))
+    def modify_structure(self):
+        if not self.current_dbf:
+            self.command.write("No database is in use.")
+            return
+        self.show_command()
+        dbf = modify_structure(self)
+        self.stdscr.clear()
+        if dbf is None:
+            return
+        self.open_dbf(str(dbf.filename))
+        self.command.write(f"{dbf.filename.name} modified (backup in .BAK).")
 
     def structure(self):
         db = self.current_dbf
@@ -368,7 +336,7 @@ class FoxBaseApp:
                 f" {field['length']:>5}  {dec:>4}")
         self.command.write(f"** Total **                     {db.record_length:>5}")
 
-    def edit_current(self):
+    def edit_current(self, mode="EDIT"):
         db = self.current_dbf
         if not db:
             self.command.write("No database is in use.")
@@ -376,9 +344,8 @@ class FoxBaseApp:
         if not db.record_count or self.eof:
             self.command.write("End of file encountered.")
             return
-        self.draw()
-        if widgets.record_editor(self.stdscr, db, self.current_record, "Edit"):
-            self.status = f"Record {self.current_record + 1} saved."
+        edit_record(self, self.current_record, mode)
+        self.stdscr.clear()
 
     def goto(self, number, quiet=False):
         db = self.current_dbf
@@ -420,6 +387,11 @@ class FoxBaseApp:
         if not db:
             self.command.write("No database is in use.")
             return
+        if edit:  # APPEND: tela cheia; só grava registros preenchidos
+            self.show_command()
+            append_records(self)
+            self.stdscr.clear()
+            return
         try:
             index = db.append_blank()
         except DBFError as exc:
@@ -428,11 +400,6 @@ class FoxBaseApp:
         self.current_record = index
         self.eof = False
         self.status = f"Record {index + 1} appended."
-        if edit:
-            self.draw()
-            widgets.record_editor(self.stdscr, db, index, "Append")
-        if self.view == "browser":
-            self.browse()
 
     def delete_current(self):
         db = self.current_dbf
