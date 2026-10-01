@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+#   foxbase-linux - FoxBASE Linux (terminal)
+#   Created: qua 30 set 2026 23:50:00 -04
+#
+#   Copyright (c) 2026, Vilmar Catafesta <vcatafesta@gmail.com>
+#   Assembled By Vilmar Catafesta for the VoidBR project.
+#   Licença: MIT
+#
+#   ChangeLog:
+#   - v0.1.0 (2026-09-30): Versão inicial — ambiente xBase em curses: Command
+#     Window com comandos xBase (USE, CREATE, BROWSE, EDIT, APPEND, LIST, REPLACE,
+#     LOCATE, DELETE/PACK, COUNT/SUM, ?, DO, RUN...), avaliador de expressões,
+#     motor DBF nativo (codepage pelo language driver, cp850 por padrão), BROWSE,
+#     tela EDIT com validação, editor de programas (MODIFY COMMAND) e compilação
+#     com Harbour (hbmk2).
+#
+import curses
+import locale
+import os
+import sys
+
+# instalado: /usr/lib/foxbase-linux ; no repositório: ../lib/foxbase-linux
+_base = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib", "foxbase-linux")
+sys.path.insert(0, os.path.normpath(_base) if os.path.isdir(_base) else "/usr/lib/foxbase-linux")
+
+os.environ.setdefault("ESCDELAY", "25")
+locale.setlocale(locale.LC_ALL, "")
+
+from foxbase_linux import APP_VERSION  # noqa: E402
+from foxbase_linux.app import FoxBaseApp  # noqa: E402
+
+
+def main(stdscr):
+    FoxBaseApp(stdscr, sys.argv[1:]).run()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in ("-V", "--version"):
+        print(f"foxbase-linux {APP_VERSION}")
+        sys.exit(0)
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print("uso: foxbase-linux [arquivo.dbf | programa.prg]")
+        sys.exit(0)
+    curses.wrapper(main)

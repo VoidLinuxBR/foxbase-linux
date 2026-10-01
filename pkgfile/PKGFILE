@@ -1,12 +1,9 @@
 # Maintainer: Vilmar Catafesta <vcatafesta@gmail.com>
 
-pkgname=voidbr-pkgname
-pkgdesc="Package template for VoidLinuxBR"
-pkgver=$(date +%Y%m%d)
-pkgrel=$(date +%H%M)
-provides=()               # "eu SOU o $pkgname pkg1, pra quem depender deles"
-replaces=()               # "remove o pkg1 pkg2 antigo automaticamente quando eu instalar"
-conflicts=()              # "nunca me deixe coexistir com o pkg1 pkg2 original"
+pkgname=foxbase-linux
+pkgdesc="FoxBASE Linux - ambiente xBase em terminal inspirado no FoxBASE+ para DOS (DBF, BROWSE, PRG)"
+pkgver=0.1.0   # = APP_VERSION (usr/lib/foxbase-linux/foxbase_linux/__init__.py); atualizar a cada release
+pkgrel=1
 arch=('any')
 license=('MIT')
 #url="ssh://git@github.com/voidlinuxbr/${pkgname}"
@@ -14,24 +11,21 @@ url="https://github.com/voidlinuxbr/${pkgname}"
 source=("git+${url}.git")
 md5sums=('SKIP')
 makedepends=()
-depends=()
+depends=(
+	'python3'         # >= 3.9 (curses da biblioteca padrão)
+)
+# opcionais (detectados em tempo de execução, não são dependência):
+#   harbour (hbmk2) -> compilar e rodar programas .prg (F5, DO programa)
 backup=()
-
-# Automatically detect and use the correct install file
-if [ -e "${pkgname}.install" ]; then
-	install=${pkgname}.install
-elif [ -e "pkgbuild.install" ]; then
-	install=pkgfile.install
-fi
 
 package() {
 	# Verify default folder
-  if [ -d "${srcdir}/${pkgname}/${pkgname}" ]; then
+	if [ -d "${srcdir}/${pkgname}/${pkgname}" ]; then
 		InternalDir="${srcdir}/${pkgname}/${pkgname}"
-  elif [ -d "${srcdir}/${pkgname}" ]; then
+	elif [ -d "${srcdir}/${pkgname}" ]; then
 		InternalDir="${srcdir}/${pkgname}"
 	else
-    #local
+		#local
 		InternalDir="${WORKDIR}"
 	fi
 
@@ -43,6 +37,12 @@ package() {
 			cp -a "${InternalDir}/${dir}" "${pkgdir}/"
 		fi
 	done
+
+	# executáveis (o git pode não preservar o bit +x em todos os fluxos)
+	chmod 755 "${pkgdir}/usr/bin/foxbase-linux"
+
+	# sem bytecode/caches do repositório
+	find "${pkgdir}/usr/lib/foxbase-linux" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 	# Install license file if present
 	if [ -f "LICENSE" ]; then
@@ -61,6 +61,10 @@ pre_install() {
 
 post_install() {
 	log "Finalizando instalação"
+	echo "==> foxbase-linux instalado."
+	echo "    Iniciar:   foxbase-linux [arquivo.dbf | programa.prg]"
+	echo "    Exemplos:  /usr/share/foxbase-linux/exemplos"
+	echo "    Programas .prg (F5 / DO) precisam do Harbour (hbmk2)."
 }
 
 pre_upgrade() {

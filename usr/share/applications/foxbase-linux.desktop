@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FoxBASE Linux
+GenericName=Ambiente xBase
+Comment=Ambiente xBase em terminal inspirado no FoxBASE+ para DOS (DBF, BROWSE, PRG)
+Exec=foxbase-linux
+Icon=utilities-terminal
+Terminal=true
+Categories=Development;Database;X-VoidBR-Apps;
+Keywords=foxbase;foxpro;dbase;clipper;harbour;xbase;dbf;prg;banco;dados;
+StartupNotify=false
