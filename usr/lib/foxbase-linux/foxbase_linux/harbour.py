@@ -11,18 +11,23 @@ variáveis de memória são sincronizados nos dois sentidos a cada comando.
 
 import atexit
 import curses
+import errno
 import os
+import select
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import date
 from pathlib import Path
 
-from . import settings, ui
+from . import screen, settings, ui
 from .expr import Num, type_letter
 
 # codepage do DBF -> codepage do Harbour
+START_TIMEOUT = 15  # segundos para o hbrun compilar o bridge e abrir a FIFO
+
 HB_CODEPAGES = {"cp850": "PT850", "cp437": "EN", "cp1252": "PTISO"}
 HB_DATE = {"AMERICAN": "mm/dd/yy", "ANSI": "yy.mm.dd", "BRITISH": "dd/mm/yy",
            "FRENCH": "dd/mm/yy", "GERMAN": "dd.mm.yy", "ITALIAN": "dd-mm-yy"}
@@ -51,9 +56,11 @@ class HarbourBridge:
         self.app = app
         self.proc = None
         self.tmp = None
-        self.writer = None
-        self.reader = None
-        self.failed = False
+        self.wfd = None
+        self.rfd = None
+        self.error = ""
+        self.error_shown = False
+        self.failed = False  # não tenta iniciar de novo a cada comando
 
     # ---------------------------------------------------------- processo
     @staticmethod
@@ -61,39 +68,107 @@ class HarbourBridge:
         return bool(shutil.which("hbrun")) and bridge_source() is not None
 
     def _start(self):
+        """Inicia o hbrun com o bridge.prg. Nunca bloqueia: se o hbrun não
+        abrir a FIFO em START_TIMEOUT segundos (erro de compilação, versão
+        antiga do Harbour...), desiste e guarda a mensagem em self.error."""
         if self.proc and self.proc.poll() is None:
             return True
-        if self.failed or not self.available():
+        if not self.available() or self.failed:
             return False
+        self.stop()
+        self.error = ""
+        screen.message(self.app.stdscr, "Please wait ...", 2)
+        self.app.stdscr.refresh()
         self.tmp = tempfile.mkdtemp(prefix="foxbase-hb-")
         fin = os.path.join(self.tmp, "in")
         fout = os.path.join(self.tmp, "out")
         os.mkfifo(fin)
         os.mkfifo(fout)
+        self.log_path = os.path.join(self.tmp, "hbrun.log")
         try:
+            log = open(self.log_path, "wb")
             self.proc = subprocess.Popen(
                 [shutil.which("hbrun"), str(bridge_source()), fin, fout],
-                stderr=subprocess.DEVNULL, cwd=os.getcwd())
-            self.writer = open(fin, "w", encoding="latin-1")
-            self.reader = open(fout, "r", encoding="latin-1")
-        except OSError:
-            self.failed = True
+                stdout=None, stderr=log, cwd=os.getcwd())
+            log.close()
+            # leitura: abre já (não bloqueia); escrita: espera o hbrun abrir a FIFO
+            self.rfd = os.open(fout, os.O_RDONLY | os.O_NONBLOCK)
+            deadline = time.monotonic() + START_TIMEOUT
+            while True:
+                try:
+                    self.wfd = os.open(fin, os.O_WRONLY | os.O_NONBLOCK)
+                    break
+                except OSError as exc:
+                    if exc.errno != errno.ENXIO:
+                        raise
+                if self.proc.poll() is not None or time.monotonic() > deadline:
+                    self._fail_start()
+                    return False
+                time.sleep(0.05)
+            os.set_blocking(self.wfd, True)
+        except OSError as exc:
+            self.error = f"Harbour bridge: {exc}"
+            self.stop()
             return False
+        self.rbuf = b""
         atexit.register(self.stop)
         return True
 
-    def stop(self):
+    def _fail_start(self):
         if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+        self.error = "Harbour bridge failed to start (hbrun)." + self._log_tail()
+        self.failed = True
+        self.stop()
+
+    def _log_tail(self):
+        try:
+            text = Path(self.log_path).read_text(errors="replace")
+        except (OSError, AttributeError):
+            return ""
+        lines = [l for l in text.splitlines()
+                 if l.strip() and "not found" not in l.lower()]
+        return ("\n" + "\n".join(lines[-4:])) if lines else ""
+
+    def stop(self):
+        proc = getattr(self, "proc", None)
+        if proc and proc.poll() is None:
             try:
-                self.writer.write("QUIT\n")
-                self.writer.flush()
-                self.proc.wait(timeout=2)
-            except (OSError, subprocess.TimeoutExpired):
-                self.proc.kill()
+                os.write(self.wfd, b"QUIT\n")
+                proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired, AttributeError, TypeError):
+                proc.kill()
+        for name in ("wfd", "rfd"):
+            fd = getattr(self, name, None)
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            setattr(self, name, None)
         self.proc = None
-        if self.tmp:
+        if getattr(self, "tmp", None):
             shutil.rmtree(self.tmp, ignore_errors=True)
             self.tmp = None
+
+    def _read_reply(self):
+        """Lê até 'END'. Retorna as linhas ou None se o hbrun morreu."""
+        reply = []
+        while True:
+            while b"\n" in self.rbuf:
+                line, self.rbuf = self.rbuf.split(b"\n", 1)
+                text = line.decode("latin-1")
+                if text == "END":
+                    return reply
+                reply.append(text)
+            ready, _, _ = select.select([self.rfd], [], [], 0.2)
+            if ready:
+                chunk = os.read(self.rfd, 65536)
+                if chunk:
+                    self.rbuf += chunk
+                    continue
+            if self.proc.poll() is not None:
+                return None
 
     # ------------------------------------------------------------ chamada
     def _codepage(self):
@@ -114,6 +189,9 @@ class HarbourBridge:
         app = self.app
         stdscr = app.stdscr
         if not self._start():
+            if self.error and not self.error_shown:
+                self.error_shown = True
+                return [self.error]
             return None
         h, w = stdscr.getmaxyx()
         alt = os.path.join(self.tmp, "alt.txt")
@@ -146,22 +224,16 @@ class HarbourBridge:
         lines.append("END")
         _keypad("rmkx")  # setas no modo normal (ESC [ C), que o Harbour entende
         try:
-            self.writer.write("\n".join(lines) + "\n")
-            self.writer.flush()
-            reply = []
-            while True:
-                line = self.reader.readline()
-                if not line:
-                    raise OSError("bridge closed")
-                line = line.rstrip("\n")
-                if line == "END":
-                    break
-                reply.append(line)
+            os.write(self.wfd, ("\n".join(lines) + "\n").encode("latin-1"))
+            reply = self._read_reply()
         except OSError:
-            self.stop()
-            self.failed = True
+            reply = None
+        if reply is None:
+            _keypad("smkx")
             stdscr.clear()
-            return None
+            self.error = "Harbour bridge stopped." + self._log_tail()
+            self.stop()
+            return [self.error]
         _keypad("smkx")
         stdscr.clear()  # o Harbour desenhou direto no terminal: redesenha tudo
         return self._apply(reply, alt, h)

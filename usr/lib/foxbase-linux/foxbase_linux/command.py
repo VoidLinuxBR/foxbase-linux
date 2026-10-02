@@ -207,7 +207,8 @@ class CommandWindow:
                 errors = self.app.harbour.run(command, self._targets(command))
                 if errors == []:
                     return
-                if errors and str(exc) not in KEEP_ORIGINAL:
+                if errors and (str(exc) not in KEEP_ORIGINAL
+                               or errors[0].startswith("Harbour bridge")):
                     for error in errors:
                         self.msg(error)
                     return
