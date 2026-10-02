@@ -1,11 +1,10 @@
-"""CREATE / MODIFY STRUCTURE em tela cheia, no estilo dBASE III PLUS / FoxBASE+.
+"""CREATE / MODIFY STRUCTURE, reproduzindo o FoxBASE+ 2.10.
 
-- Campos em duas colunas: Field Name, Type, Width, Dec; "Bytes remaining" no topo.
-- Tipo: barra de espaço alterna (Character, Numeric, Date, Logical) ou a letra inicial.
-- Date e Logical têm largura fixa (8 e 1); Dec só existe no Numeric.
-- ^N insere campo, ^U remove campo, ^End grava ("Press ENTER to confirm. Any other
-  key to resume"), Esc abandona. Enter num nome em branco no fim também grava.
-- MODIFY STRUCTURE guarda o original em .BAK e copia os dados pelos nomes dos campos.
+Layout: "Bytes remaining" na linha 1, caixa de navegação (F1) nas linhas 3-8,
+"field name  type     width  dec" em duas colunas com a linha ═ embaixo e os
+campos numerados. Mensagens nas duas últimas linhas, como no original.
+^Home abre o menu (Bottom, Top, Field #, Save, Abandon); ^End grava
+("Press ENTER to confirm.  Any other key to resume."); Esc abandona.
 """
 
 import copy
@@ -13,31 +12,54 @@ import curses
 import shutil
 from pathlib import Path
 
-from . import screen, ui
+from . import screen, settings, ui
 from .dbf import DBF, DBFError
-from .widgets import CTRL_END, is_backspace, is_enter, read_key
+from .widgets import (CTRL_END, CTRL_HOME, LineEdit, is_backspace, is_enter, read_key)
 
 MAX_RECORD = 4000
 MAX_FIELDS = 128
+TYPES = ["C", "N", "D", "L", "M"]
 TYPE_NAMES = {"C": "Character", "N": "Numeric", "D": "Date", "L": "Logical", "M": "Memo"}
-TYPE_CYCLE = ["C", "N", "D", "L"]
-COLUMNS = ("name", "type", "width", "dec")
-COLUMN_WIDTH = {"name": 10, "type": 9, "width": 3, "dec": 3}
+FIXED_WIDTH = {"D": 8, "L": 1, "M": 10}
 
-MESSAGES = {
-    "name": ("Enter the field name.",
-             "Field names begin with a letter and may contain letters, digits and underscores"),
-    "type": ("Enter the field type.",
-             "Press SPACE to change, or type C, N, D or L"),
-    "width": ("Enter the field width.",
-              "Character fields: 1-254  Numeric fields: 1-19"),
-    "dec": ("Enter the number of decimal places.",
-            "Decimals must be less than the width minus 1"),
+MSG_FIELD = {
+    "name": "Enter the name field.",
+    "type": "Press SPACE to change the field type",
+    "width": "Enter the field width.",
+    "dec": "Enter the number of decimal places.",
 }
+MSG_NAME = "Field names begin with a letter and may contain letters, digits and underscores"
+MSG_TYPE = {
+    "C": "CHARACTER fields contain character information of a specified length.",
+    "N": "NUMERIC fields contain signed numbers that may be either integer or decimal.",
+    "D": "DATE fields have the form mm/dd/yy unless otherwise specified.",
+    "L": "LOGICAL fields have a value of either T or F.",
+    "M": "MEMO fields contains character information of varying lengths.",
+}
+MSG_WIDTH = {
+    "C": "Character fields are 1 to 254 positions wide.",
+    "N": "Numeric fields are 1 to 19 digits wide, including the decimal point and sign.",
+}
+MSG_DEC = "Decimal widths are 1 to 15 and must be at least 2 less than the field width."
+
+MENU_ITEMS = [
+    ("Bottom", "Go to the last field in the file structure."),
+    ("Top", "Go to the first field in the file structure."),
+    ("Field #", "Go to a specified field name."),
+    ("Save", "Toggle cursor menu."),
+    ("Abandon", "Toggle cursor menu."),
+]
+MENU_POS = [1, 12, 20, 32, 41]
+
+HEADER = "field name  type     width  dec"
+RULE = "═" * 31
+CELL_X = {"name": 5, "type": 17, "width": 28, "dec": 33}
+CELL_W = {"name": 10, "type": 9, "width": 3, "dec": 3}
+COLUMN_OFFSET = 44
 
 
 def _blank_row():
-    return {"name": "", "type": "C", "width": "", "dec": "", "orig": None}
+    return {"name": "", "type": "C", "width": 0, "dec": 0, "orig": None}
 
 
 class StructureEditor:
@@ -50,320 +72,174 @@ class StructureEditor:
         self.rows = []
         if existing:
             for index, field in enumerate(existing.fields):
+                kind = field["type"] if field["type"] in TYPES else "C"
                 self.rows.append({
-                    "name": field["name"],
-                    "type": field["type"],
-                    "width": str(field["length"]),
-                    "dec": str(field["decimals"]) if field["type"] in ("N", "F") else "",
+                    "name": field["name"], "type": kind,
+                    "width": field["length"],
+                    "dec": field["decimals"] if kind == "N" else 0,
                     "orig": index,
                 })
         if not self.rows:
             self.rows.append(_blank_row())
         self.row = 0
         self.col = "name"
-        self.pos = 0
+        self.edit = None
         self.page_top = 0
-        self.msg = ""
-        self.msg_error = False
+        self._start_cell()
 
     # ------------------------------------------------------------ regras
-    @staticmethod
-    def _fixed_width(kind):
-        return {"D": "8", "L": "1", "M": "10"}.get(kind)
+    def _bytes_remaining(self):
+        return MAX_RECORD - sum(int(r["width"]) for r in self.rows if r["name"])
 
-    def _columns_for(self, row):
-        kind = row["type"]
-        if kind in ("D", "L", "M"):
-            return ["name", "type"]
-        if kind in ("N", "F"):
-            return ["name", "type", "width", "dec"]
-        return ["name", "type", "width"]
+    def _cell_text(self, row, col):
+        if col == "name":
+            return row["name"]
+        if col == "type":
+            return TYPE_NAMES[row["type"]]
+        return str(row[col])
 
-    def _bytes_used(self):
-        total = 1
-        for row in self.rows:
-            width = self._fixed_width(row["type"]) or row["width"]
-            if str(width).isdigit():
-                total += int(width)
-        return total
+    def _start_cell(self):
+        row = self.rows[self.row]
+        if self.col in ("name", "width", "dec"):
+            text = row["name"] if self.col == "name" else ""
+            self.edit = LineEdit(text, CELL_W[self.col])
+            self.edit.pos = 0
+            self.edit.dirty = False
+        else:
+            self.edit = None
 
-    def _validate_row(self, row, index):
-        name = row["name"].strip().upper()
-        if not name:
-            return "Field name is required."
-        if not name[0].isalpha() or not all(c.isalnum() or c == "_" for c in name):
-            return "Field names begin with a letter and may contain letters, digits and underscores"
-        for other_index, other in enumerate(self.rows):
-            if other_index != index and other["name"].strip().upper() == name:
-                return f"Field name already exists: {name}"
-        kind = row["type"]
-        if kind in ("C", "N", "F"):
-            if not row["width"].strip().isdigit():
-                return "Field width is required."
-            width = int(row["width"])
-            if kind == "C" and not 1 <= width <= 254:
-                return "Illegal value: width must be 1-254"
-            if kind in ("N", "F") and not 1 <= width <= 19:
-                return "Illegal value: width must be 1-19"
-            if kind in ("N", "F") and row["dec"].strip():
-                dec = int(row["dec"]) if row["dec"].strip().isdigit() else -1
-                if dec < 0 or (dec > 0 and dec > width - 2) or dec > 15:
-                    return "Illegal value: decimals"
+    def _commit_cell(self):
+        """Valida e grava a célula atual; retorna mensagem de erro ou None."""
+        row = self.rows[self.row]
+        if self.col == "name":
+            name = self.edit.text.strip().upper()
+            if not name:
+                row["name"] = ""
+                return None
+            if not name[0].isalpha() or not all(c.isalnum() or c == "_" for c in name) \
+                    or not name.isascii():
+                return "Illegal field name"
+            for i, other in enumerate(self.rows):
+                if i != self.row and other["name"] == name:
+                    return "Field name is already in use."
+            row["name"] = name
+        elif self.col in ("width", "dec"):
+            if not self.edit.dirty:
+                return None
+            text = self.edit.text.strip()
+            value = int(text) if text.isdigit() else 0
+            if self.col == "width":
+                limit = 254 if row["type"] == "C" else 19
+                if not 1 <= value <= limit:
+                    return "Illegal data length"
+                if self._bytes_remaining() + int(row["width"]) - value < 0:
+                    return "Maximum record length exceeded."
+                row["width"] = value
+            else:
+                if value and (value > 15 or value > int(row["width"]) - 2):
+                    return "Illegal decimal length"
+                row["dec"] = value
+        elif self.col == "type":
+            fixed = FIXED_WIDTH.get(row["type"])
+            if fixed:
+                row["width"], row["dec"] = fixed, 0
+            elif row["type"] == "C":
+                row["dec"] = 0
         return None
 
-    def _row_complete(self, row):
-        return bool(row["name"].strip())
+    def _cols(self, row):
+        if row["type"] == "N":
+            return ["name", "type", "width", "dec"]
+        if row["type"] == "C":
+            return ["name", "type", "width"]
+        return ["name", "type"]
 
-    # ------------------------------------------------------- navegação
-    def _cell(self):
-        row = self.rows[self.row]
-        value = row[self.col]
-        if self.col == "type":
-            return TYPE_NAMES.get(value, value)
-        return value
-
-    def _leave_row(self):
-        """Valida a linha atual ao sair dela. Linha toda vazia no fim é descartada."""
-        row = self.rows[self.row]
-        if not self._row_complete(row) and self.row == len(self.rows) - 1 \
-                and not row["width"].strip():
-            return True
-        error = self._validate_row(row, self.row)
+    # -------------------------------------------------------- movimento
+    def _leave(self):
+        error = self._commit_cell()
         if error:
-            self._error(error)
+            screen.error_wait(self.stdscr, read_key, error)
+            self._start_cell()
             return False
-        row["name"] = row["name"].strip().upper()
-        if not row["dec"].strip() and row["type"] in ("N", "F"):
-            row["dec"] = "0"
         return True
 
-    def _move_row(self, target, col="name"):
-        if target == self.row:
-            return
-        if not self._leave_row():
-            return
-        current = self.row
-        if target >= len(self.rows):
-            if not self._row_complete(self.rows[current]):
-                return
-            if len(self.rows) >= MAX_FIELDS:
-                self._error(f"Maximum of {MAX_FIELDS} fields.")
-                return
-            self.rows.append(_blank_row())
-            target = len(self.rows) - 1
-        elif (current == len(self.rows) - 1 and len(self.rows) > 1
-              and not self._row_complete(self.rows[current])):
-            self.rows.pop()  # linha nova em branco no fim é descartada
-        self.row = max(0, min(target, len(self.rows) - 1))
-        self.col = col
-        self.pos = 0
+    def _goto(self, row, col="name"):
+        if not self._leave():
+            return False
+        current = self.rows[self.row]
+        if row != self.row:
+            if current["name"] and current["type"] in ("C", "N") and not current["width"]:
+                screen.error_wait(self.stdscr, read_key, "Illegal data length")
+                self.col = "width"
+                self._start_cell()
+                return False
+            if not current["name"] and self.row == len(self.rows) - 1 and len(self.rows) > 1 \
+                    and row < self.row:
+                self.rows.pop()
+        if row >= len(self.rows):
+            if not self.rows[-1]["name"]:
+                row = len(self.rows) - 1
+            elif len(self.rows) >= MAX_FIELDS:
+                screen.error_wait(self.stdscr, read_key, "Maximum number of fields exceeded.")
+                return False
+            else:
+                self.rows.append(_blank_row())
+        self.row = max(0, min(row, len(self.rows) - 1))
+        self.col = col if col in self._cols(self.rows[self.row]) else "name"
+        self._start_cell()
+        return True
 
-    def _next_col(self):
+    def _next(self):
+        """Enter: próxima célula. Retorna 'save' para nome em branco no fim."""
         row = self.rows[self.row]
-        cols = self._columns_for(row)
-        if self.col == "name" and not row["name"].strip():
+        if self.col == "name" and not self.edit.text.strip():
             if self.row == len(self.rows) - 1:
-                return "finish"
-            self._error("Field name is required.")
+                return "save"
+            screen.error_wait(self.stdscr, read_key, "Illegal field name")
             return None
-        if self.col == "name":
-            error = None
-            name = row["name"].strip().upper()
-            if not name[0].isalpha() or not all(c.isalnum() or c == "_" for c in name):
-                error = MESSAGES["name"][1]
-            if error:
-                self._error(error)
-                return None
-            row["name"] = name
-        index = cols.index(self.col) if self.col in cols else len(cols) - 1
+        if not self._leave():
+            return None
+        cols = self._cols(row)
+        index = cols.index(self.col)
         if index + 1 < len(cols):
             self.col = cols[index + 1]
-            self.pos = 0
-            return None
-        self._move_row(self.row + 1)
+            self._start_cell()
+        else:
+            self._goto(self.row + 1)
         return None
 
-    def _prev_col(self):
-        cols = self._columns_for(self.rows[self.row])
-        index = cols.index(self.col) if self.col in cols else 0
+    def _prev(self):
+        if not self._leave():
+            return
+        cols = self._cols(self.rows[self.row])
+        index = cols.index(self.col)
         if index > 0:
             self.col = cols[index - 1]
-            self.pos = 0
+            self._start_cell()
         elif self.row > 0:
-            target = self.row - 1
-            self._move_row(target, col="name")
-            if self.row == target:
-                self.col = self._columns_for(self.rows[self.row])[-1]
+            if self._goto(self.row - 1):
+                self.col = self._cols(self.rows[self.row])[-1]
+                self._start_cell()
 
-    def _error(self, text):
-        curses.beep()
-        self.msg = text
-        self.msg_error = True
-
-    # ------------------------------------------------------------ edição
-    def _type_key(self, ch):
-        row = self.rows[self.row]
-        if ch == " ":
-            cycle = TYPE_CYCLE + (["M"] if row["type"] == "M" or
-                                  (row["orig"] is not None and self.existing and
-                                   self.existing.fields[row["orig"]]["type"] == "M") else [])
-            current = cycle.index(row["type"]) if row["type"] in cycle else 0
-            row["type"] = cycle[(current + 1) % len(cycle)]
-        elif isinstance(ch, str) and ch.upper() in TYPE_CYCLE:
-            row["type"] = ch.upper()
-        else:
-            curses.beep()
-            return
-        fixed = self._fixed_width(row["type"])
-        if fixed:
-            row["width"], row["dec"] = fixed, ""
-        elif row["type"] == "C":
-            row["dec"] = ""
-        if ch != " ":
-            self._next_col()
-
-    def _text_key(self, ch):
-        row = self.rows[self.row]
-        limit = COLUMN_WIDTH[self.col]
-        text = row[self.col]
-        if isinstance(ch, str):
-            if self.col == "name":
-                ch = ch.upper()
-                if not (ch.isalnum() or ch == "_") or ord(ch) > 127:
-                    curses.beep()
-                    return
-                if not text and not ch.isalpha():
-                    self._error(MESSAGES["name"][1])
-                    return
-            elif not ch.isdigit():
-                curses.beep()
-                return
-            if self.app.insert_mode:
-                text = (text[:self.pos] + ch + text[self.pos:])[:limit]
-            else:
-                text = text[:self.pos] + ch + text[self.pos + 1:]
-            row[self.col] = text[:limit]
-            self.pos += 1
-            if self.pos >= limit:
-                curses.beep()
-                self._next_col()
-        elif ch == curses.KEY_LEFT:
-            if self.pos > 0:
-                self.pos -= 1
-            else:
-                self._prev_col()
-        elif ch == curses.KEY_RIGHT:
-            if self.pos < min(len(text), limit - 1):
-                self.pos += 1
-            else:
-                self._next_col()
-        elif ch == curses.KEY_HOME:
-            self.pos = 0
-        elif ch == curses.KEY_END:
-            self.pos = min(len(text), limit - 1)
-        elif is_backspace(ch):
-            if self.pos > 0:
-                row[self.col] = text[:self.pos - 1] + text[self.pos:]
-                self.pos -= 1
-        elif ch == curses.KEY_DC:
-            row[self.col] = text[:self.pos] + text[self.pos + 1:]
-        elif ch == 25:  # ^Y
-            row[self.col] = text[:self.pos]
-
-    # ------------------------------------------------------------ gravar
-    def _fields(self):
-        fields = []
-        for index, row in enumerate(self.rows):
-            if not self._row_complete(row):
-                continue
-            error = self._validate_row(row, index)
-            if error:
-                self.row, self.col = index, "name"
-                self._error(error)
-                return None
-            kind = row["type"]
-            fields.append({
-                "name": row["name"].strip().upper(),
-                "type": kind,
-                "length": int(self._fixed_width(kind) or row["width"]),
-                "decimals": int(row["dec"] or 0) if kind in ("N", "F") else 0,
-                "orig": row["orig"],
-            })
-        if not fields:
-            self._error("Database has no fields.")
-            return None
-        if sum(f["length"] for f in fields) + 1 > MAX_RECORD:
-            self._error(f"Record too long (maximum {MAX_RECORD} bytes).")
-            return None
-        return fields
-
-    def _save(self):
-        fields = self._fields()
-        if fields is None:
-            return None
-        if not screen.wait_enter(self.stdscr, read_key,
-                                 "Press ENTER to confirm. Any other key to resume"):
-            return None
-        create_fields = [{k: v for k, v in f.items() if k != "orig"} for f in fields]
-        try:
-            if not self.modify:
-                return DBF.create(self.path, copy.deepcopy(create_fields))
-            return self._restructure(fields, create_fields)
-        except (OSError, DBFError) as exc:
-            self._error(f"Error: {exc}")
-            return None
-
-    def _restructure(self, fields, create_fields):
-        old = self.existing
-        backup = self.path.with_suffix(".bak" if self.path.suffix.islower() else ".BAK")
-        shutil.copy2(self.path, backup)
-        new = DBF.create(self.path, copy.deepcopy(create_fields), allow_memo=True)
-        for rec_index, record in enumerate(old.records):
-            values = []
-            for field, spec in zip(new.fields, fields):
-                orig = spec["orig"]
-                if orig is None:
-                    values.append("")
-                    continue
-                old_field = old.fields[orig]
-                raw = record["values"][orig]
-                if old_field["type"] == field["type"] == "M":
-                    values.append(raw)
-                    continue
-                try:
-                    if old_field["type"] == field["type"]:
-                        values.append(new.validate(field, raw if field["type"] != "D"
-                                                   else (raw or "")))
-                    else:
-                        values.append(new.from_typed(field, old.typed_value(
-                            rec_index, orig)))
-                except (DBFError, ValueError):
-                    values.append("")
-            new.records.append({"deleted": record["deleted"], "values": values})
-        new.save()
-        return new
-
-    # -------------------------------------------------------------- tela
-    def _draw(self):
+    # ------------------------------------------------------------ tela
+    def _draw(self, line0=None):
         stdscr = self.stdscr
         h, w = stdscr.getmaxyx()
         screen.clear(stdscr)
-        y = 0
+        if line0:
+            ui.put(stdscr, 0, 0, line0)
+        ui.put(stdscr, 1, 55, f"Bytes remaining:{self._bytes_remaining():7d}")
+        y = 2
         if self.app.show_help:
-            y = screen.help_box(stdscr, screen.HELP_CREATE)
-        remaining = f"Bytes remaining: {MAX_RECORD - self._bytes_used():>6}"
-        ui.put(stdscr, y + 1, w - len(remaining) - 2, remaining)
-        header = "Field Name  Type       Width   Dec"
-        col_x = (6, 6 + (w // 2))
-        ui.put(stdscr, y + 2, col_x[0], header, curses.A_BOLD)
-        ui.put(stdscr, y + 2, col_x[1], header, curses.A_BOLD)
-        first = y + 3
+            screen.help_box(stdscr, screen.HELP_CREATE, y=3)
+            y = 10
+        for off in (0, COLUMN_OFFSET):
+            ui.put(stdscr, y, 5 + off, HEADER)
+            ui.put(stdscr, y + 1, 5 + off, RULE, curses.color_pair(ui.C_BORDER))
+        first = y + 2
         per_col = max(1, h - 3 - first)
         per_page = per_col * 2
-
-        if self.row < self.page_top:
-            self.page_top = (self.row // per_page) * per_page
-        elif self.row >= self.page_top + per_page:
+        if self.row < self.page_top or self.row >= self.page_top + per_page:
             self.page_top = (self.row // per_page) * per_page
 
         cursor = None
@@ -373,41 +249,41 @@ class StructureEditor:
             if index >= len(self.rows):
                 break
             row = self.rows[index]
-            x = col_x[slot // per_col] - 5
+            off = COLUMN_OFFSET if slot >= per_col else 0
             yy = first + slot % per_col
-            ui.put(stdscr, yy, x, f"{index + 1:>4}")
-            cols = self._columns_for(row)
-            cells = {
-                "name": (x + 5, row["name"].ljust(10)),
-                "type": (x + 17, TYPE_NAMES.get(row["type"], row["type"]).ljust(9)),
-                "width": (x + 29, (self._fixed_width(row["type"]) or row["width"]).rjust(3)),
-                "dec": (x + 37, row["dec"].rjust(3) if "dec" in cols else ""),
-            }
-            for col, (cx, text) in cells.items():
-                if col == "dec" and "dec" not in cols:
+            ui.put(stdscr, yy, off, f"{index + 1:3d}")
+            current = index == self.row
+            for col in ("name", "type", "width", "dec"):
+                x = CELL_X[col] + off
+                width = CELL_W[col]
+                if current and col == self.col and self.edit is not None:
+                    text = self.edit.text.ljust(width)
+                    if col != "name" and not self.edit.dirty:
+                        text = str(row[col]).rjust(width)
+                    ui.put(stdscr, yy, x, text[:width], rev)
+                    cursor = (yy, x + min(self.edit.pos, width - 1))
                     continue
-                if col == "width" and "width" not in cols:
-                    ui.put(stdscr, yy, cx, text)  # largura fixa: só mostra
-                    continue
-                if index == self.row and col == self.col:
-                    if col in ("width", "dec"):
-                        text = row[col].ljust(3)
-                    ui.put(stdscr, yy, cx, text, rev)
-                    cursor = (yy, cx + (0 if col == "type" else min(self.pos, len(text) - 1)))
-                else:
-                    ui.put(stdscr, yy, cx, text, rev if index == self.row else 0)
+                text = self._cell_text(row, col)
+                text = text.rjust(width) if col in ("width", "dec") else text.ljust(width)
+                ui.put(stdscr, yy, x, text, rev if current else 0)
+                if current and col == self.col:
+                    cursor = (yy, x)
 
-        mode = "MODIFY STRU" if self.modify else "CREATE"
-        screen.status_bar(stdscr, mode, self.path,
+        mode = "MODIFY STRUCTURE" if self.modify else "CREATE"
+        screen.status_bar(stdscr, mode, self.path if self.modify else "",
                           f"Field: {self.row + 1}/{len(self.rows)}",
-                          screen.flags_text(self.app.insert_mode))
-        if self.msg:
-            screen.message(stdscr, self.msg, error=self.msg_error)
+                          "Ins" if self.app.insert_mode else "")
+        row = self.rows[self.row]
+        if self.col == "name":
+            help_text = MSG_NAME
+        elif self.col == "type":
+            help_text = MSG_TYPE[row["type"]]
+        elif self.col == "width":
+            help_text = MSG_WIDTH.get(row["type"], "")
         else:
-            top, bottom = MESSAGES[self.col]
-            ui.put(stdscr, h - 3, max(0, (w - len(top)) // 2), top, curses.A_BOLD)
-            screen.message(stdscr, bottom)
-        if cursor:
+            help_text = MSG_DEC
+        screen.messages(stdscr, MSG_FIELD[self.col], help_text)
+        if cursor and not line0:
             curses.curs_set(1)
             try:
                 stdscr.move(*cursor)
@@ -415,7 +291,212 @@ class StructureEditor:
                 pass
         stdscr.refresh()
 
-    # -------------------------------------------------------------- loop
+    # ----------------------------------------------------------- menu
+    def _menu(self):
+        if not self._leave():
+            return None
+        bar = screen.OptionBar(MENU_ITEMS, MENU_POS, screen.MSG_SELECT_DASH)
+        while True:
+            self._draw()
+            bar.draw(self.stdscr)
+            curses.curs_set(0)
+            self.stdscr.refresh()
+            ch = read_key(self.stdscr)
+            if ch == CTRL_HOME:
+                return None
+            choice = bar.key(ch)
+            if choice is None:
+                continue
+            if choice == -1:
+                return None
+            if choice == 0:
+                self._goto(len(self.rows) - 1)
+            elif choice == 1:
+                self._goto(0)
+            elif choice == 2:
+                self._field_number()
+            elif choice == 3:
+                return "save"
+            elif choice == 4:
+                return "abandon"
+            return None
+
+    def _field_number(self):
+        edit = LineEdit(str(self.row + 1), 3)
+        while True:
+            self._draw(f"Enter field #: {edit.text}")
+            curses.curs_set(1)
+            try:
+                self.stdscr.move(0, 15 + edit.pos)
+            except curses.error:
+                pass
+            ch = read_key(self.stdscr)
+            result = edit.key(ch) if ch is not None else None
+            if result == "cancel":
+                return
+            if result == "enter":
+                text = edit.text.strip()
+                if text.isdigit() and 1 <= int(text) <= len(self.rows):
+                    self._goto(int(text) - 1)
+                    return
+                screen.error_wait(self.stdscr, read_key,
+                                  f"Range is 1 to {len(self.rows)} (press SPACE)")
+                return
+
+    # ---------------------------------------------------------- gravar
+    def _fields(self):
+        fields = []
+        for row in self.rows:
+            if not row["name"]:
+                continue
+            fields.append({"name": row["name"], "type": row["type"],
+                           "length": int(row["width"]),
+                           "decimals": int(row["dec"]) if row["type"] == "N" else 0,
+                           "orig": row["orig"]})
+        return fields
+
+    def _save(self):
+        if not self._leave():
+            return None
+        fields = self._fields()
+        if not fields:
+            screen.error_wait(self.stdscr, read_key, "Empty structure will not be saved")
+            return None
+        for row in self.rows:
+            if row["name"] and row["type"] in ("C", "N") and not row["width"]:
+                screen.error_wait(self.stdscr, read_key, "Illegal data length")
+                return None
+        consequence = ""
+        self.positional = False
+        if self.modify:
+            old = self.existing
+            renamed = any(f["orig"] is not None and old.fields[f["orig"]]["name"] != f["name"]
+                          for f in fields)
+            if renamed:
+                self._draw()
+                screen.message(self.stdscr, "", 1)
+                screen.message(self.stdscr,
+                               "Should data be COPIED from backup for all fields? (Y/N) ", 2)
+                ch = screen.wait_key(self.stdscr, read_key)
+                self.positional = isinstance(ch, str) and ch.upper() == "Y"
+                consequence = ("Database records will be COPIED from backup for all fields."
+                               if self.positional else
+                               "Database records will be APPENDED from backup fields of "
+                               "the same name only!!")
+        self._draw()
+        screen.message(self.stdscr, consequence, 1)
+        if not screen.wait_enter(self.stdscr, read_key,
+                                 "Press ENTER to confirm.  Any other key to resume."):
+            return None
+        create_fields = [{k: v for k, v in f.items() if k != "orig"} for f in fields]
+        try:
+            if not self.modify:
+                dbf = DBF.create(self.path, copy.deepcopy(create_fields))
+                self._draw()
+                screen.message(self.stdscr, "", 1)
+                self.input_now = screen.ask_yn(self.stdscr, read_key,
+                                               "Input data records now? (Y/N) ")
+                return dbf
+            return self._restructure(fields, create_fields)
+        except (OSError, DBFError) as exc:
+            screen.error_wait(self.stdscr, read_key, str(exc))
+            return None
+
+    def _restructure(self, fields, create_fields):
+        old = self.existing
+        positional = self.positional
+        self._draw()
+        screen.messages(self.stdscr, "", "Please wait ...")
+        self.stdscr.refresh()
+
+        if positional:
+            sources = [i if i < len(old.fields) else None for i in range(len(fields))]
+        else:
+            sources = [old.field_index(f["name"]) if old.field_index(f["name"]) >= 0 else None
+                       for f in fields]
+
+        backup = self.path.with_suffix(".bak" if self.path.suffix.islower() else ".BAK")
+        shutil.copy2(self.path, backup)
+        old_memo = old.memo_path if old.memo_path.exists() else None
+        if old_memo:
+            shutil.copy2(old_memo, old_memo.with_suffix(
+                ".tbk" if old_memo.suffix.islower() else ".TBK"))
+        new = DBF.create(self.path, copy.deepcopy(create_fields), allow_memo=bool(old_memo))
+        for rec_index, record in enumerate(old.records):
+            values = []
+            for field, orig in zip(new.fields, sources):
+                if orig is None:
+                    values.append("")
+                    continue
+                old_field = old.fields[orig]
+                raw = record["values"][orig]
+                if field["type"] == "M":
+                    values.append(raw if old_field["type"] == "M" else "")
+                    continue
+                try:
+                    if old_field["type"] == field["type"]:
+                        values.append(new.validate(field, raw))
+                    else:
+                        values.append(new.from_typed(field, old.typed_value(rec_index, orig)))
+                except (DBFError, ValueError):
+                    values.append("")
+            new.records.append({"deleted": record["deleted"], "values": values})
+        new.save()
+        if settings.on("TALK"):
+            self.app.console.println(f"{len(new.records):7d} records added")
+        return new
+
+    # ------------------------------------------------------------ loop
+    def _type_key(self, ch):
+        row = self.rows[self.row]
+        if ch == " ":
+            row["type"] = TYPES[(TYPES.index(row["type"]) + 1) % len(TYPES)]
+            return
+        if isinstance(ch, str) and ch.upper() in TYPES:
+            row["type"] = ch.upper()
+            self._next()
+            return
+        if isinstance(ch, str):
+            screen.error_wait(self.stdscr, read_key, "Field type must be C, N, D, L or M.")
+
+    def _text_key(self, ch):
+        edit = self.edit
+        width = CELL_W[self.col]
+        if isinstance(ch, str):
+            if self.col == "name":
+                ch = ch.upper()
+            elif not ch.isdigit():
+                curses.beep()
+                return
+            if self.col != "name" and not edit.dirty:
+                edit.set("")
+            if self.app.insert_mode or edit.pos >= len(edit.text):
+                if len(edit.text) >= width:
+                    curses.beep()
+                    return
+                edit.text = edit.text[:edit.pos] + ch + edit.text[edit.pos:]
+            else:
+                edit.text = edit.text[:edit.pos] + ch + edit.text[edit.pos + 1:]
+            edit.pos += 1
+            edit.dirty = True
+            if edit.pos >= width:
+                curses.beep()
+                self._next()
+            return
+        if ch == 25:  # ^Y apaga
+            edit.set("")
+            edit.dirty = True
+            return
+        if ch == curses.KEY_LEFT and edit.pos == 0:
+            self._prev()
+            return
+        if ch == curses.KEY_RIGHT and edit.pos >= len(edit.text):
+            self._next()
+            return
+        if is_backspace(ch) or ch == curses.KEY_DC:
+            edit.dirty = True
+        edit.key(ch)
+
     def run(self):
         """Retorna o DBF criado/alterado ou None se abandonado."""
         while True:
@@ -423,66 +504,72 @@ class StructureEditor:
             ch = read_key(self.stdscr)
             if ch is None or ch == curses.KEY_RESIZE:
                 continue
-            self.msg, self.msg_error = "", False
-
+            action = None
             if ch == curses.KEY_F1:
                 self.app.show_help = not self.app.show_help
             elif ch == curses.KEY_IC:
                 self.app.insert_mode = not self.app.insert_mode
             elif ch == 27:
-                if screen.ask_yn(self.stdscr, read_key,
-                                 "Are you sure you want to abandon operation? (Y/N)"):
-                    return None
-            elif ch in (CTRL_END, 23):  # ^End / ^W
-                result = self._save()
-                if result is not None:
-                    return result
+                action = "abandon"
+            elif ch in (CTRL_END, 23):
+                action = "save"
+            elif ch == CTRL_HOME:
+                action = self._menu()
             elif ch == 14:  # ^N insere campo
+                if not self._leave():
+                    continue
                 if len(self.rows) >= MAX_FIELDS:
-                    self._error(f"Maximum of {MAX_FIELDS} fields.")
-                else:
-                    self.rows.insert(self.row, _blank_row())
-                    self.col, self.pos = "name", 0
+                    screen.error_wait(self.stdscr, read_key, "Maximum number of fields exceeded.")
+                    continue
+                self.rows.insert(self.row, _blank_row())
+                self.col = "name"
+                self._start_cell()
             elif ch == 21:  # ^U remove campo
                 if len(self.rows) > 1:
                     del self.rows[self.row]
                     self.row = min(self.row, len(self.rows) - 1)
                 else:
                     self.rows[0] = _blank_row()
-                self.col, self.pos = "name", 0
+                self.col = "name"
+                self._start_cell()
             elif ch == curses.KEY_UP:
-                self._move_row(self.row - 1 if self.row else 0, self.col
-                               if self.col in ("name", "type") else "name")
+                self._goto(self.row - 1 if self.row else 0, self.col)
             elif ch == curses.KEY_DOWN:
-                if self.row < len(self.rows) - 1 or self._row_complete(self.rows[self.row]):
-                    self._move_row(self.row + 1, self.col
-                                   if self.col in ("name", "type") else "name")
+                self._goto(self.row + 1, self.col)
             elif ch == curses.KEY_PPAGE:
-                self._move_row(max(0, self.row - 10))
+                self._goto(max(0, self.row - 10))
             elif ch == curses.KEY_NPAGE:
-                self._move_row(min(len(self.rows) - 1, self.row + 10))
-            elif is_enter(ch):
-                if self._next_col() == "finish":
-                    result = self._save()
-                    if result is not None:
-                        return result
-            elif ch in (9,):
-                self._next_col()
+                self._goto(min(len(self.rows) - 1, self.row + 10))
+            elif is_enter(ch) or ch == 9:
+                action = self._next()
             elif ch == curses.KEY_BTAB:
-                self._prev_col()
+                self._prev()
             elif self.col == "type":
-                if ch in (curses.KEY_LEFT,):
-                    self._prev_col()
-                elif ch in (curses.KEY_RIGHT,):
-                    self._next_col()
+                if ch == curses.KEY_LEFT:
+                    self._prev()
+                elif ch == curses.KEY_RIGHT:
+                    self._next()
                 else:
                     self._type_key(ch)
             else:
                 self._text_key(ch)
 
+            if action == "abandon":
+                self._draw()
+                screen.message(self.stdscr, "", 1)
+                if screen.ask_yn(self.stdscr, read_key, screen.MSG_ABANDON):
+                    return None
+            elif action == "save":
+                result = self._save()
+                if result is not None:
+                    return result
+
 
 def create_structure(app, path):
-    return StructureEditor(app, path).run()
+    """Retorna (dbf, responder 'Input data records now?') ou (None, False)."""
+    editor = StructureEditor(app, path)
+    dbf = editor.run()
+    return dbf, getattr(editor, "input_now", False)
 
 
 def modify_structure(app):

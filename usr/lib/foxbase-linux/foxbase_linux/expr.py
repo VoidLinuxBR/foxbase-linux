@@ -1,13 +1,42 @@
-"""Avaliador simples de expressões xBase (para ?, ??, REPLACE)."""
+"""Avaliador de expressões xBase (?, ??, STORE, REPLACE, FOR/WHILE).
+
+Os números carregam largura e casas decimais (classe Num), como no FoxBASE+:
+'? 5' mostra "5", '? x' (variável) mostra em 10 posições, um campo N(10,2)
+mostra em 10 posições com 2 casas, '? 10/3' mostra " 3.33".
+"""
 
 import re
 from datetime import date, datetime, timedelta
 
+from . import settings
 from .dbf import DBFError, parse_date
 
 
 class ExprError(Exception):
     pass
+
+
+class Num(float):
+    """Número com largura e decimais de exibição."""
+
+    def __new__(cls, value, width=10, dec=0):
+        obj = super().__new__(cls, value)
+        obj.width = max(1, int(width))
+        obj.dec = max(0, int(dec))
+        return obj
+
+    def text(self):
+        if self.dec:
+            out = f"{float(self):.{self.dec}f}"
+        else:
+            out = str(int(round(float(self))))
+        return out.rjust(self.width)
+
+
+def num(value, width=10, dec=0):
+    if isinstance(value, Num):
+        return value
+    return Num(value, width, dec)
 
 
 TOKEN_RE = re.compile(
@@ -17,7 +46,7 @@ TOKEN_RE = re.compile(
     | (?P<str>"[^"]*"|'[^']*'|\[[^\]]*\])
     | (?P<log>\.(?:T|F|Y|N|AND|OR|NOT)\.)
     | (?P<name>[A-Za-z_][A-Za-z0-9_]*(?:->[A-Za-z_][A-Za-z0-9_]*)?)
-    | (?P<op><>|<=|>=|!=|==|[-+*/(),=<>#$!])
+    | (?P<op><>|<=|>=|!=|==|\*\*|[-+*/^(),=<>#$!%])
     )""",
     re.VERBOSE | re.IGNORECASE,
 )
@@ -28,28 +57,40 @@ def tokenize(text):
     tokens = []
     text = text.rstrip()
     while pos < len(text):
+        if not text[pos:].strip():
+            break
         match = TOKEN_RE.match(text, pos)
         if not match or match.end() == pos:
-            raise ExprError(f"Syntax error near: {text[pos:pos + 10]}")
+            raise ExprError("Syntax error.")
         pos = match.end()
         kind = match.lastgroup
-        value = match.group(kind)
-        tokens.append((kind, value))
+        tokens.append((kind, match.group(kind)))
     return tokens
 
 
 def format_value(value):
+    """Valor como sai no ? / STORE."""
     if isinstance(value, bool):
         return ".T." if value else ".F."
     if isinstance(value, date):
-        return value.strftime("%d/%m/%Y")
+        return settings.fmt_date(value)
     if value is None:
-        return "  /  /    "
-    if isinstance(value, float):
-        return f"{value:.2f}".rjust(10)
-    if isinstance(value, int):
-        return str(value).rjust(10)
+        return settings.blank_date()
+    if isinstance(value, Num):
+        return value.text()
+    if isinstance(value, (int, float)):
+        return num(value).text()
     return str(value)
+
+
+def type_letter(value):
+    if isinstance(value, bool):
+        return "L"
+    if isinstance(value, (int, float)):
+        return "N"
+    if isinstance(value, date) or value is None:
+        return "D"
+    return "C"
 
 
 def _str_of_number(value, length=10, decimals=0):
@@ -71,11 +112,11 @@ class Evaluator:
             raise ExprError("Missing expression.")
         value = self._or()
         if self.pos < len(self.tokens):
-            raise ExprError(f"Unexpected: {self.tokens[self.pos][1]}")
+            raise ExprError("Syntax error.")
         return value
 
     def evaluate_list(self, text):
-        """Avalia lista separada por vírgulas (para ?)."""
+        """Lista separada por vírgulas (para ?)."""
         self.tokens = tokenize(text)
         self.pos = 0
         values = []
@@ -87,8 +128,35 @@ class Evaluator:
                 continue
             break
         if self.pos < len(self.tokens):
-            raise ExprError(f"Unexpected: {self.tokens[self.pos][1]}")
+            raise ExprError("Syntax error.")
         return values
+
+    def check(self, text):
+        """Valida a sintaxe sem avaliar (usado antes de imprimir com ?)."""
+        tokens = tokenize(text)
+        depth = 0
+        expect_operand = True
+        for kind, value in tokens:
+            if kind == "op" and value == "(":
+                depth += 1
+                expect_operand = True
+            elif kind == "op" and value == ")":
+                depth -= 1
+                expect_operand = False
+            elif kind == "op" and value == ",":
+                expect_operand = True
+            elif kind == "op" or (kind == "log" and value.upper() in (".AND.", ".OR.")):
+                if expect_operand and value not in ("-", "+", "!"):
+                    raise ExprError("Missing operand.")
+                expect_operand = True
+            elif kind == "log" and value.upper() == ".NOT.":
+                expect_operand = True
+            else:
+                expect_operand = False
+        if tokens and expect_operand:
+            raise ExprError("Missing operand.")
+        if depth:
+            raise ExprError("Unbalanced parenthesis.")
 
     def _peek(self):
         return self.tokens[self.pos] if self.pos < len(self.tokens) else (None, None)
@@ -104,19 +172,25 @@ class Evaluator:
         left = self._and()
         while self._accept("log", ".OR."):
             right = self._and()
-            left = bool(left) or bool(right)
+            left = self._bool(left) or self._bool(right)
         return left
 
     def _and(self):
         left = self._not()
         while self._accept("log", ".AND."):
             right = self._not()
-            left = bool(left) and bool(right)
+            left = self._bool(left) and self._bool(right)
         return left
+
+    @staticmethod
+    def _bool(value):
+        if not isinstance(value, bool):
+            raise ExprError("Not a Logical expression.")
+        return value
 
     def _not(self):
         if self._accept("log", ".NOT.") or self._accept("op", "!"):
-            return not bool(self._not())
+            return not self._bool(self._not())
         return self._compare()
 
     def _compare(self):
@@ -126,57 +200,70 @@ class Evaluator:
             self.pos += 1
             right = self._additive()
             if tv == "$":
-                return str(left) in str(right)
-            if isinstance(left, str) and isinstance(right, str):
-                if tv == "=":  # comparação xBase (SET EXACT OFF)
-                    return left.startswith(right)
+                if not (isinstance(left, str) and isinstance(right, str)):
+                    raise ExprError("Operator/operand type mismatch.")
+                return left in right
+            if type_letter(left) != type_letter(right):
+                raise ExprError("Operator/operand type mismatch.")
+            if isinstance(left, str):
                 if tv == "==":
                     return left.rstrip() == right.rstrip()
-            try:
-                return {
-                    "=": lambda a, b: a == b,
-                    "==": lambda a, b: a == b,
-                    "<>": lambda a, b: a != b,
-                    "!=": lambda a, b: a != b,
-                    "#": lambda a, b: a != b,
-                    "<": lambda a, b: a < b,
-                    ">": lambda a, b: a > b,
-                    "<=": lambda a, b: a <= b,
-                    ">=": lambda a, b: a >= b,
-                }[tv](left, right)
-            except TypeError as exc:
-                raise ExprError("Data type mismatch.") from exc
+                if not settings.on("EXACT"):
+                    left = left[:len(right)]
+                else:
+                    left, right = left.rstrip(), right.rstrip()
+            if left is None or right is None:
+                left = left or date.min
+                right = right or date.min
+            ops = {
+                "=": lambda a, b: a == b, "==": lambda a, b: a == b,
+                "<>": lambda a, b: a != b, "!=": lambda a, b: a != b,
+                "#": lambda a, b: a != b, "<": lambda a, b: a < b,
+                ">": lambda a, b: a > b, "<=": lambda a, b: a <= b,
+                ">=": lambda a, b: a >= b,
+            }
+            return ops[tv](left, right)
         return left
 
     def _additive(self):
         left = self._term()
         while True:
             if self._accept("op", "+"):
-                right = self._term()
-                left = self._add(left, right)
+                left = self._add(left, self._term())
             elif self._accept("op", "-"):
-                right = self._term()
-                left = self._sub(left, right)
+                left = self._sub(left, self._term())
             else:
                 return left
 
     def _term(self):
-        left = self._unary()
+        left = self._power()
         while True:
             if self._accept("op", "*"):
-                right = self._unary()
-                left = self._num(left) * self._num(right)
+                a, b = self._num(left), self._num(self._power())
+                left = Num(float(a) * float(b), a.width + b.width + 1, a.dec + b.dec)
             elif self._accept("op", "/"):
-                right = self._num(self._unary())
-                if right == 0:
+                a, b = self._num(left), self._num(self._power())
+                if float(b) == 0:
                     raise ExprError("Division by zero.")
-                left = self._num(left) / right
+                dec = max(a.dec, settings.state["DECIMALS"])
+                left = Num(float(a) / float(b), max(a.width, b.width) + dec + 1, dec)
+            elif self._accept("op", "%"):
+                a, b = self._num(left), self._num(self._power())
+                left = Num(float(a) % float(b), max(a.width, b.width), max(a.dec, b.dec))
             else:
                 return left
 
+    def _power(self):
+        left = self._unary()
+        while self._accept("op", "^") or self._accept("op", "**"):
+            a, b = self._num(left), self._num(self._unary())
+            left = Num(float(a) ** float(b), 10, settings.state["DECIMALS"])
+        return left
+
     def _unary(self):
         if self._accept("op", "-"):
-            return -self._num(self._unary())
+            a = self._num(self._unary())
+            return Num(-float(a), a.width + 1, a.dec)
         if self._accept("op", "+"):
             return self._num(self._unary())
         return self._primary()
@@ -184,11 +271,12 @@ class Evaluator:
     def _primary(self):
         tk, tv = self._peek()
         if tk is None:
-            raise ExprError("Missing expression.")
+            raise ExprError("Missing operand.")
         self.pos += 1
 
         if tk == "num":
-            return float(tv) if "." in tv else int(tv)
+            dec = len(tv.split(".", 1)[1]) if "." in tv else 0
+            return Num(float(tv), len(tv), dec)
         if tk == "str":
             return tv[1:-1]
         if tk == "log":
@@ -197,11 +285,11 @@ class Evaluator:
                 return True
             if up in (".F.", ".N."):
                 return False
-            raise ExprError(f"Unexpected: {tv}")
+            raise ExprError("Missing operand.")
         if tk == "op" and tv == "(":
             value = self._or()
             if not self._accept("op", ")"):
-                raise ExprError("Missing ).")
+                raise ExprError("Unbalanced parenthesis.")
             return value
         if tk == "name":
             if self._accept("op", "("):
@@ -212,52 +300,67 @@ class Evaluator:
                         if self._accept("op", ","):
                             continue
                         if not self._accept("op", ")"):
-                            raise ExprError("Missing ).")
+                            raise ExprError("Unbalanced parenthesis.")
                         break
                 return self._call(tv.upper(), args)
             return self._field(tv)
-        raise ExprError(f"Unexpected: {tv}")
+        raise ExprError("Missing operand.")
 
     # ----------------------------------------------------------- helpers
     @staticmethod
     def _num(value):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ExprError("Data type mismatch.")
-        return value
+            raise ExprError("Operator/operand type mismatch.")
+        return num(value)
 
     def _add(self, a, b):
-        if a is None and isinstance(b, (int, float)):
-            return None  # data vazia + n = data vazia
         if isinstance(a, str) and isinstance(b, str):
             return a + b
-        if isinstance(a, date) and isinstance(b, (int, float)) and not isinstance(b, bool):
-            return a + timedelta(days=int(b))
-        return self._num(a) + self._num(b)
+        if (isinstance(a, date) or a is None) and isinstance(b, (int, float)) \
+                and not isinstance(b, bool):
+            return a + timedelta(days=int(b)) if a else None
+        a, b = self._num(a), self._num(b)
+        return Num(float(a) + float(b), max(a.width, b.width) + 1, max(a.dec, b.dec))
 
     def _sub(self, a, b):
         if isinstance(a, str) and isinstance(b, str):
             return a.rstrip() + b + " " * (len(a) - len(a.rstrip()))
         if isinstance(a, date) and isinstance(b, date):
-            return (a - b).days
-        if isinstance(a, date) and isinstance(b, (int, float)) and not isinstance(b, bool):
-            return a - timedelta(days=int(b))
-        return self._num(a) - self._num(b)
+            return Num((a - b).days, 10)
+        if (isinstance(a, date) or a is None) and isinstance(b, (int, float)) \
+                and not isinstance(b, bool):
+            return a - timedelta(days=int(b)) if a else None
+        a, b = self._num(a), self._num(b)
+        return Num(float(a) - float(b), max(a.width, b.width) + 1, max(a.dec, b.dec))
+
+    def field_value(self, dbf, index, fi):
+        field = dbf.fields[fi]
+        value = dbf.typed_value(index, fi)
+        if field["type"] in ("N", "F"):
+            return Num(value, field["length"], field["decimals"])
+        if field["type"] == "M":
+            return dbf.read_memo(dbf.records[index]["values"][fi])
+        return value
 
     def _field(self, name):
         dbf = self.app.current_dbf
         if "->" in name:
             name = name.split("->", 1)[1]
-        if dbf and dbf.record_count and not self.app.eof:
+        if dbf:
             fi = dbf.field_index(name)
             if fi >= 0:
-                rec = min(self.app.current_record, dbf.record_count - 1)
-                return dbf.typed_value(rec, fi)
-        elif dbf and dbf.field_index(name) >= 0:
-            field = dbf.fields[dbf.field_index(name)]
-            return {"C": " " * field["length"], "N": 0, "D": None, "L": False}.get(field["type"], "")
+                if dbf.record_count and not self.app.eof:
+                    rec = min(self.app.current_record, dbf.record_count - 1)
+                    return self.field_value(dbf, rec, fi)
+                field = dbf.fields[fi]
+                return {
+                    "C": " " * field["length"],
+                    "N": Num(0, field["length"], field["decimals"]),
+                    "D": None, "L": False,
+                }.get(field["type"], "")
         if name.upper() in self.app.memvars:
             return self.app.memvars[name.upper()]
-        raise ExprError(f"Variable not found: {name.upper()}")
+        raise ExprError("Variable not found.")
 
     def _call(self, name, args):
         app = self.app
@@ -266,36 +369,54 @@ class Evaluator:
         def arg(i, default=None):
             return args[i] if len(args) > i else default
 
+        def n10(value, dec=0):
+            return Num(value, 10, dec)
+
         if name == "RECNO":
-            return app.current_record + 1 if dbf else 0
+            if not dbf:
+                return n10(0)
+            return n10(dbf.record_count + 1 if app.eof else app.current_record + 1)
         if name == "RECCOUNT":
-            return dbf.record_count if dbf else 0
+            return n10(dbf.record_count if dbf else 0)
+        if name == "RECSIZE":
+            return n10(dbf.record_length if dbf else 0)
+        if name == "FCOUNT":
+            return n10(len(dbf.fields) if dbf else 0)
+        if name == "FIELD":
+            i = int(self._num(arg(0, 1)))
+            return dbf.fields[i - 1]["name"] if dbf and 0 < i <= len(dbf.fields) else ""
         if name == "EOF":
             return not dbf or app.eof
         if name == "BOF":
-            return not dbf or app.current_record == 0
+            return not dbf or app.bof
+        if name == "FOUND":
+            return bool(app.found)
         if name == "DELETED":
             return bool(dbf and dbf.record_count and not app.eof
                         and dbf.records[app.current_record]["deleted"])
         if name == "DBF":
-            return str(dbf.filename.name).upper() if dbf else ""
+            return str(dbf.filename) if dbf else ""
         if name == "DATE":
             return date.today()
         if name == "TIME":
             return datetime.now().strftime("%H:%M:%S")
-        if name in ("UPPER", "LOWER", "TRIM", "RTRIM", "LTRIM", "ALLTRIM", "LEN"):
+        if name in ("UPPER", "LOWER", "TRIM", "RTRIM", "LTRIM", "ALLTRIM"):
             text = arg(0)
             if not isinstance(text, str):
-                raise ExprError("Data type mismatch.")
+                raise ExprError("Operator/operand type mismatch.")
+            if name == "UPPER":  # como no original: só letras ASCII
+                return "".join(c.upper() if c.isascii() else c for c in text)
+            if name == "LOWER":
+                return "".join(c.lower() if c.isascii() else c for c in text)
             return {
-                "UPPER": text.upper,
-                "LOWER": text.lower,
-                "TRIM": text.rstrip,
-                "RTRIM": text.rstrip,
-                "LTRIM": text.lstrip,
-                "ALLTRIM": text.strip,
-                "LEN": lambda: len(text),
+                "TRIM": text.rstrip, "RTRIM": text.rstrip, "LTRIM": text.lstrip, "ALLTRIM": text.strip,
             }[name]()
+        if name == "LEN":
+            if not isinstance(arg(0), str):
+                raise ExprError("Operator/operand type mismatch.")
+            return n10(len(arg(0)))
+        if name == "AT":
+            return n10(str(arg(1, "")).find(str(arg(0, ""))) + 1)
         if name == "SUBSTR":
             text, start = str(arg(0, "")), int(self._num(arg(1, 1)))
             length = arg(2)
@@ -311,18 +432,32 @@ class Evaluator:
         if name == "REPLICATE":
             return str(arg(0, "")) * int(self._num(arg(1, 0)))
         if name == "STR":
-            return _str_of_number(self._num(arg(0, 0)), int(arg(1, 10)), int(arg(2, 0)))
+            return _str_of_number(float(self._num(arg(0, 0))), int(arg(1, 10)), int(arg(2, 0)))
         if name == "VAL":
+            text = str(arg(0, "")).strip()
+            match = re.match(r"[-+]?\d*\.?\d*", text)
             try:
-                return float(str(arg(0, "")).strip() or 0)
+                value = float(match.group(0)) if match and match.group(0) not in ("", "-", "+", ".") else 0.0
             except ValueError:
-                return 0
+                value = 0.0
+            return n10(value, settings.state["DECIMALS"])
         if name == "INT":
-            return int(self._num(arg(0, 0)))
+            return n10(int(float(self._num(arg(0, 0)))))
         if name == "ROUND":
-            return round(self._num(arg(0, 0)), int(arg(1, 0)))
+            a = self._num(arg(0, 0))
+            places = int(arg(1, 0))
+            return Num(round(float(a), places), a.width, max(0, places))
         if name == "ABS":
-            return abs(self._num(arg(0, 0)))
+            a = self._num(arg(0, 0))
+            return Num(abs(float(a)), a.width, a.dec)
+        if name in ("MAX", "MIN"):
+            a, b = arg(0), arg(1)
+            return (max if name == "MAX" else min)(a, b)
+        if name == "MOD":
+            a, b = self._num(arg(0, 0)), self._num(arg(1, 1))
+            return Num(float(a) % float(b), max(a.width, b.width), max(a.dec, b.dec))
+        if name == "SQRT":
+            return n10(float(self._num(arg(0, 0))) ** 0.5, settings.state["DECIMALS"])
         if name == "DTOC":
             return format_value(arg(0))
         if name == "DTOS":
@@ -336,13 +471,37 @@ class Evaluator:
         if name in ("DAY", "MONTH", "YEAR"):
             value = arg(0)
             if not isinstance(value, date):
-                return 0
-            return getattr(value, name.lower())
+                return Num(0, 3 if name != "YEAR" else 5)
+            return Num(getattr(value, name.lower()), 3 if name != "YEAR" else 5)
+        if name == "DOW":
+            value = arg(0)
+            return Num((value.isoweekday() % 7) + 1 if isinstance(value, date) else 0, 3)
+        if name == "CDOW":
+            value = arg(0)
+            return value.strftime("%A") if isinstance(value, date) else ""
+        if name == "CMONTH":
+            value = arg(0)
+            return value.strftime("%B") if isinstance(value, date) else ""
         if name == "CHR":
             return chr(int(self._num(arg(0, 32))))
         if name == "ASC":
             text = str(arg(0, ""))
-            return ord(text[0]) if text else 0
+            return n10(ord(text[0]) if text else 0)
+        if name == "ISALPHA":
+            return str(arg(0, ""))[:1].isalpha()
+        if name == "ISUPPER":
+            return str(arg(0, ""))[:1].isupper()
+        if name == "ISLOWER":
+            return str(arg(0, ""))[:1].islower()
         if name == "IIF":
             return arg(1) if arg(0) else arg(2)
-        raise ExprError(f"Unrecognized function: {name}()")
+        if name == "TYPE":
+            try:
+                return type_letter(self.app.command.evaluator.evaluate(str(arg(0, ""))))
+            except ExprError:
+                return "U"
+        if name == "VERSION":
+            return "FoxBASE+ 2.10"
+        if name == "OS":
+            return "Linux"
+        raise ExprError("Unrecognized phrase/keyword.")

@@ -7,17 +7,21 @@ fixas e o número é alinhado à direita ao sair do campo.
 
 import curses
 
-from . import ui
+from . import settings, ui
 from .dbf import DBFError
 from .widgets import is_backspace
 
 EDITABLE = ("C", "N", "F", "D", "L")
-DATE_BLANK = "  /  /    "
-DATE_SEPARATORS = (2, 5)
+
+
+def date_separators():
+    blank = settings.blank_date()
+    return tuple(i for i, ch in enumerate(blank) if ch != " ")
 
 
 class FieldEditor:
-    def __init__(self, dbf, field, raw):
+    def __init__(self, dbf, field, raw, blank_zero=True):
+        self.blank_zero = blank_zero
         self.dbf = dbf
         self.field = field
         self.kind = field["type"]
@@ -34,23 +38,32 @@ class FieldEditor:
         if kind == "C":
             return raw[:self.width].ljust(self.width)
         if kind in ("N", "F"):
-            return raw.strip()[:self.width].rjust(self.width)
+            if not raw.strip() and not self.blank_zero and not self.field["decimals"]:
+                return " " * self.width
+            return self.dbf.number_text(self.field, raw)
         if kind == "D":
-            shown = self.dbf.display_value(self.field, raw)
-            return shown if shown.strip("/ ") else DATE_BLANK
+            return settings.fmt_date_raw(raw)
         if kind == "L":
             value = raw.strip()[:1].upper()
             return value if value in ("T", "F", "Y", "N") else " "
         return self.dbf.display_value(self.field, raw)[:self.width].ljust(self.width)
 
     def is_blank(self):
-        return not self.text.replace("/", "").strip()
+        text = self.text
+        if self.kind == "D":
+            text = "".join(ch for i, ch in enumerate(text) if i not in date_separators())
+        if self.kind in ("N", "F"):
+            return not text.replace(".", "").strip() or not self.dirty and \
+                text.strip() in ("0", ".")
+        return not text.strip()
 
     def value(self):
         """Valor cru para gravar (levanta DBFError se inválido)."""
         if not self.editable:
             raise DBFError("read-only")
         if self.kind == "D" and self.is_blank():
+            return ""
+        if self.kind in ("N", "F") and not self.text.replace(".", "").strip():
             return ""
         return self.dbf.validate(self.field, self.text)
 
@@ -66,7 +79,8 @@ class FieldEditor:
     def _fix(self, pos, step):
         """Pula as barras fixas da data."""
         if self.kind == "D":
-            while pos in DATE_SEPARATORS:
+            seps = date_separators()
+            while pos in seps:
                 pos += step
         return max(0, min(pos, self.width - 1))
 
@@ -140,7 +154,7 @@ class FieldEditor:
             return "unhandled"
 
         if ch == 25:  # Ctrl-Y: apaga o campo
-            self.text = DATE_BLANK if self.kind == "D" else " " * self.width
+            self.text = settings.blank_date() if self.kind == "D" else " " * self.width
             self.home()
             self.dirty = True
             return None
@@ -163,8 +177,13 @@ class FieldEditor:
                 return None
             if self.kind == "L":
                 ch = ch.upper()
-            if self.kind in ("N", "F") and not self.dirty and self.pos == 0:
-                self.text = " " * self.width  # 1ª tecla no número limpa o campo
+            if self.kind in ("N", "F") and not self.dirty:
+                try:
+                    zero = float(self.text.replace(" ", "") or 0) == 0
+                except ValueError:
+                    zero = False
+                if zero:  # número zerado/em branco: a 1ª tecla limpa o campo
+                    self.text = " " * self.width
             if insert and self.kind in ("C", "N", "F"):
                 self.text = (self.text[:self.pos] + ch + self.text[self.pos:])[:self.width]
             else:

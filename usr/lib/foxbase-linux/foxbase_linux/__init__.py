@@ -9,20 +9,23 @@
 """FoxBASE Linux — ambiente xBase em terminal, inspirado no FoxBASE+ para DOS.
 
 Módulos:
-    app.py      janela principal, menus, teclas globais e ações de banco
-    command.py  Command Window: interpretador de comandos xBase
-    expr.py     avaliador de expressões xBase (?, REPLACE, FOR)
-    dbf.py      leitura/escrita direta de DBF (dBASE III / FoxBASE+)
-    structure.py CREATE / MODIFY STRUCTURE (tela de estrutura)
-    form.py     EDIT / CHANGE / APPEND (tela de registro)
-    browser.py  BROWSE (grade com edição direta)
+    app.py       janela principal (ponto), menus e telas cheias
+    console.py   área de saída da linha de comandos, como no original
+    command.py   interpretador de comandos xBase e formatos de saída
+    expr.py      avaliador de expressões (números com largura/decimais)
+    settings.py  estado dos SET (DATE, CENTURY, TALK, DELETED...)
+    dbf.py       leitura/escrita de DBF (dBASE III / FoxBASE+) e memo .DBT
+    browser.py   BROWSE
+    form.py      EDIT / CHANGE / APPEND
+    structure.py CREATE / MODIFY STRUCTURE
+    editor.py    MODIFY COMMAND e edição de memo
+    helpview.py  HELP
     fieldedit.py edição de um campo (sobrescrever/inserir, data, número)
-    screen.py   caixa de ajuda, barra de status e linha de mensagens
-    editor.py   MODIFY COMMAND (editor de programas .prg)
-    widgets.py  teclado, linha de edição e diálogos
-    runner.py   RUN / DO / F5: programas externos e Harbour (hbmk2)
-    ui.py       cores, molduras e barra de menus (curses)
+    screen.py    caixas de navegação, barra de status, mensagens, menus de opção
+    widgets.py   teclado e linha de edição
+    runner.py    RUN / DO: programas externos e Harbour (hbmk2)
+    ui.py        cores, molduras e barra de menus (curses)
 """
 
 APP_NAME = "foxbase-linux"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"

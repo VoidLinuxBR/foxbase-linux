@@ -30,9 +30,20 @@ def init_colors():
     curses.init_pair(C_ERROR, curses.COLOR_WHITE, curses.COLOR_RED)
 
 
+# cópia em texto do que está na tela (para manter a tela anterior visível
+# acima do ponto, como o FoxBASE+ faz ao sair do BROWSE/EDIT/APPEND)
+SHADOW = {}
+
+
 def clear(stdscr):
     stdscr.bkgd(" ", curses.color_pair(C_BLUE))
     stdscr.erase()
+    SHADOW.clear()
+
+
+def snapshot(rows):
+    """Texto das linhas pedidas, como estão na tela agora."""
+    return ["".join(SHADOW.get(y, [])).rstrip() for y in rows]
 
 
 def put(stdscr, y, x, text, attr=0):
@@ -42,6 +53,10 @@ def put(stdscr, y, x, text, attr=0):
     text = str(text)[:max(0, w - x)]
     if not attr & curses.A_COLOR:
         attr |= curses.color_pair(C_BLUE)
+    row = SHADOW.setdefault(y, [])
+    if len(row) < x + len(text):
+        row.extend(" " * (x + len(text) - len(row)))
+    row[x:x + len(text)] = list(text)
     try:
         stdscr.addstr(y, x, text, attr)
     except curses.error:
@@ -53,19 +68,21 @@ def fill(stdscr, y, x, width, char=" ", attr=0):
     put(stdscr, y, x, char * max(0, width), attr)
 
 
-def box(stdscr, y, x, h, w, title=None, attr=None, clear=False):
+def box(stdscr, y, x, h, w, title=None, attr=None, clear=False, double=False):
     if h < 2 or w < 2:
         return
 
     attr = attr or curses.color_pair(C_BORDER)
+    tl, tr, bl, br, hz, vt = ("╔", "╗", "╚", "╝", "═", "║") if double else \
+        ("┌", "┐", "└", "┘", "─", "│")
 
-    put(stdscr, y, x, "┌" + "─" * (w - 2) + "┐", attr)
+    put(stdscr, y, x, tl + hz * (w - 2) + tr, attr)
     for row in range(y + 1, y + h - 1):
-        put(stdscr, row, x, "│", attr)
+        put(stdscr, row, x, vt, attr)
         if clear:
             fill(stdscr, row, x + 1, w - 2)
-        put(stdscr, row, x + w - 1, "│", attr)
-    put(stdscr, y + h - 1, x, "└" + "─" * (w - 2) + "┘", attr)
+        put(stdscr, row, x + w - 1, vt, attr)
+    put(stdscr, y + h - 1, x, bl + hz * (w - 2) + br, attr)
 
     if title:
         title = f" {title} "[:max(0, w - 4)]

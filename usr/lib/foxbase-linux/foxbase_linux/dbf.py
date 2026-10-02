@@ -2,8 +2,10 @@
 
 import os
 import struct
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
+
+from . import settings
 
 
 class DBFError(Exception):
@@ -35,26 +37,15 @@ CODEPAGE_LDID = {"cp437": 0x01, "cp850": 0x02, "cp1252": 0x03}
 DEFAULT_CODEPAGE = os.environ.get("FOXBASE_CODEPAGE", "cp850")
 
 EDITABLE_TYPES = ("C", "N", "F", "D", "L")
-VALID_CREATE_TYPES = ("C", "N", "D", "L")
+VALID_CREATE_TYPES = ("C", "N", "D", "L", "M")
 
 
 def parse_date(text):
-    """Aceita dd/mm/aaaa, dd/mm/aa, aaaammdd. Retorna date ou None."""
-    text = str(text).strip()
-    if not text or text.replace("/", "").strip() == "":
-        return None
-    if len(text) == 8 and text.isdigit():
-        return datetime.strptime(text, "%Y%m%d").date()
-    parts = text.replace("-", "/").replace(".", "/").split("/")
-    if len(parts) != 3 or not all(p.strip().isdigit() for p in parts):
-        raise DBFError(f"Invalid date: {text}")
-    day, month, year = (int(p) for p in parts)
-    if year < 100:
-        year += 1900 if year >= 50 else 2000
+    """Texto no formato do SET DATE (ou aaaammdd cru) -> date ou None."""
     try:
-        return date(year, month, day)
+        return settings.parse_display_date(text)
     except ValueError as exc:
-        raise DBFError(f"Invalid date: {text}") from exc
+        raise DBFError("Invalid date.") from exc
 
 
 class DBF:
@@ -63,6 +54,7 @@ class DBF:
         self.fields = []
         self.records = []
         self.version = 0x03
+        self.last_update = None
         self.header_length = 0
         self.record_length = 0
         self.codepage = DEFAULT_CODEPAGE
@@ -93,7 +85,7 @@ class DBF:
             field["name"] = name
             kind = field["type"].upper()
             field["type"] = kind
-            if kind not in VALID_CREATE_TYPES and not (allow_memo and kind == "M"):
+            if kind not in VALID_CREATE_TYPES:
                 raise DBFError(f"Bad field type: {kind}")
             if kind == "M":
                 field["length"], field["decimals"] = 10, 0
@@ -137,6 +129,9 @@ class DBF:
 
         try:
             filename.write_bytes(bytes(data))
+            if header[0] == 0x83 and not allow_memo:
+                memo = filename.with_suffix(".DBT" if filename.suffix.isupper() else ".dbt")
+                cls.create_memo_file(memo)
         except OSError as exc:
             raise DBFError(str(exc)) from exc
 
@@ -150,6 +145,10 @@ class DBF:
                 raise DBFError("Not a database file.")
 
             self.version = header[0]
+            try:
+                self.last_update = date(1900 + header[1], header[2] or 1, header[3] or 1)
+            except ValueError:
+                self.last_update = None
             count = struct.unpack_from("<I", header, 4)[0]
             self.header_length = struct.unpack_from("<H", header, 8)[0]
             self.record_length = struct.unpack_from("<H", header, 10)[0]
@@ -222,6 +221,7 @@ class DBF:
                     f.write(data)
                 f.write(b"\x1A")
                 f.truncate()
+            self.last_update = today
         except OSError as exc:
             raise DBFError(str(exc)) from exc
 
@@ -236,24 +236,107 @@ class DBF:
     @staticmethod
     def display_width(field):
         if field["type"] == "D":
-            return 10
+            return settings.date_width()
         if field["type"] == "M":
             return 4
         return field["length"]
 
     @staticmethod
     def display_value(field, raw):
+        """Valor como aparece nas telas (EDIT, BROWSE, APPEND)."""
         kind = field["type"]
         if kind == "D":
-            raw = raw.strip()
-            if len(raw) == 8 and raw.isdigit():
-                return f"{raw[6:8]}/{raw[4:6]}/{raw[0:4]}"
-            return "  /  /    "
+            return settings.fmt_date_raw(raw)
         if kind == "L":
-            return raw.strip()[:1] if raw.strip() in ("T", "F", "Y", "N") else "?"
+            value = raw.strip()[:1].upper()
+            return value if value in ("T", "F", "Y", "N") else " "
         if kind == "M":
             return "Memo" if raw.strip() not in ("", "0") else "memo"
+        if kind in ("N", "F"):
+            return DBF.number_text(field, raw)
         return raw
+
+    @staticmethod
+    def number_text(field, raw):
+        """Número alinhado à direita na largura do campo (em branco = 0)."""
+        width, dec = field["length"], field["decimals"]
+        raw = raw.strip()
+        if not raw:
+            if dec:
+                return (" " * (width - dec - 1) + "." + " " * dec)[-width:]
+            return "0".rjust(width)
+        return raw.rjust(width)[-width:]
+
+    @staticmethod
+    def list_value(field, raw):
+        """Valor como sai no LIST/DISPLAY."""
+        kind = field["type"]
+        if kind == "L":
+            value = raw.strip()[:1].upper()
+            return {"T": ".T.", "Y": ".T.", "F": ".F.", "N": ".F."}.get(value, "   ")
+        if kind in ("N", "F"):
+            return raw.strip().rjust(field["length"])
+        if kind == "D":
+            return settings.fmt_date_raw(raw)
+        if kind == "M":
+            return "Memo" if raw.strip() not in ("", "0") else "memo"
+        return raw.ljust(field["length"])
+
+    # -------------------------------------------------------------- memo
+    @property
+    def memo_path(self):
+        for suffix in (".dbt", ".DBT"):
+            path = self.filename.with_suffix(suffix)
+            if path.exists():
+                return path
+        return self.filename.with_suffix(".DBT" if self.filename.suffix.isupper() else ".dbt")
+
+    @staticmethod
+    def create_memo_file(path):
+        header = bytearray(512)
+        struct.pack_into("<I", header, 0, 1)
+        header[16] = 0x03
+        path.write_bytes(bytes(header))
+
+    def read_memo(self, raw):
+        raw = raw.strip()
+        if not raw.isdigit() or int(raw) == 0:
+            return ""
+        try:
+            with self.memo_path.open("rb") as f:
+                f.seek(int(raw) * 512)
+                data = bytearray()
+                while True:
+                    chunk = f.read(512)
+                    if not chunk:
+                        break
+                    end = chunk.find(b"\x1a")
+                    if end >= 0:
+                        data += chunk[:end]
+                        break
+                    data += chunk
+        except OSError:
+            return ""
+        return data.decode(self.codepage, errors="replace").replace("\r\n", "\n")
+
+    def write_memo(self, text):
+        """Grava o texto num bloco novo do .DBT; retorna o número do bloco (cru)."""
+        if not text:
+            return ""
+        path = self.memo_path
+        if not path.exists():
+            self.create_memo_file(path)
+        data = text.replace("\n", "\r\n").encode(self.codepage, errors="replace") + b"\x1a\x1a"
+        with path.open("r+b") as f:
+            next_block = struct.unpack("<I", f.read(4))[0] or 1
+            f.seek(next_block * 512)
+            f.write(data)
+            pad = (-len(data)) % 512
+            f.write(b"\0" * pad)
+            blocks = (len(data) + pad) // 512
+            f.seek(0)
+            f.write(struct.pack("<I", next_block + blocks))
+        return str(next_block)
 
     def validate(self, field, text):
         """Converte texto digitado para o valor cru gravado no DBF."""
@@ -264,17 +347,17 @@ class DBF:
             return text[:field["length"]].rstrip()
 
         if kind in ("N", "F"):
-            text = text.strip().replace(",", ".")
+            text = text.replace(" ", "").replace(",", ".")
             if not text:
                 return ""
             try:
                 number = float(text)
             except ValueError as exc:
-                raise DBFError(f"Not numeric: {text}") from exc
+                raise DBFError("Invalid Input") from exc
             dec = field["decimals"]
             out = f"{number:.{dec}f}" if dec else str(int(round(number)))
             if len(out) > field["length"]:
-                raise DBFError(f"Numeric overflow in {field['name']}")
+                raise DBFError("Numeric Overflow")
             return out
 
         if kind == "D":
@@ -289,7 +372,7 @@ class DBF:
                 return "F"
             if value in ("", "?"):
                 return ""
-            raise DBFError("Logical must be T or F")
+            raise DBFError("Invalid Input")
 
         raise DBFError(f"Field {field['name']} ({kind}) is read-only.")
 
@@ -321,7 +404,7 @@ class DBF:
         if isinstance(value, date):
             if field["type"] == "D":
                 return value.strftime("%Y%m%d")
-            return self.validate(field, value.strftime("%d/%m/%Y"))
+            return self.validate(field, settings.fmt_date(value))
         if value is None:
             return ""
         return self.validate(field, str(value))
