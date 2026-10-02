@@ -9,6 +9,18 @@
 #   Licença: MIT
 #
 #   ChangeLog:
+#   - v0.3.0 (2026-10-01): comportamento reproduzido do FoxBASE+ 2.10 original,
+#     comparado tela a tela com ele rodando no DOSBox: tela de comandos (ponto
+#     fixo acima da barra de status, saída rolando, '??' na posição do cursor),
+#     barra de status e mensagens do original; F2-F10 como no original
+#     (list, dir, display structure/status/memory, display, append, edit) e F1 HELP;
+#     formatos de LIST/DISPLAY/STRUCTURE/MEMORY/STATUS, DIR, SUM/AVERAGE, COUNT,
+#     REPLACE, DELETE/RECALL, PACK, ZAP, LOCATE/CONTINUE, SKIP/GO e as mensagens
+#     de erro; larguras numéricas do '?'; SET DATE/CENTURY/TALK/DELETED/EXACT...;
+#     BROWSE, EDIT/APPEND, CREATE/MODIFY STRUCTURE e MODIFY COMMAND com as telas,
+#     caixas de navegação, menus (F10/^Home) e perguntas do original; campo Memo
+#     (.DBT) com edição por ^Home; menu do foxbase-linux agora no F12 / Alt+letra,
+#     só com comandos do original.
 #   - v0.2.0 (2026-10-01): criação e edição no padrão FoxBASE+/dBASE III PLUS:
 #     CREATE e MODIFY STRUCTURE em tela cheia (Field Name/Type/Width/Dec em duas
 #     colunas, "Bytes remaining", tipo pela barra de espaço ou letra, ^N/^U, ^End com
@@ -40,7 +52,9 @@ from foxbase_linux.app import FoxBaseApp  # noqa: E402
 
 
 def main(stdscr):
-    FoxBaseApp(stdscr, sys.argv[1:]).run()
+    app = FoxBaseApp(stdscr, sys.argv[1:])
+    app.run()
+    return getattr(app, "quit_message", "")
 
 
 if __name__ == "__main__":
@@ -50,4 +64,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
         print("uso: foxbase-linux [arquivo.dbf | programa.prg]")
         sys.exit(0)
-    curses.wrapper(main)
+    message = curses.wrapper(main)
+    if message:
+        print(message)

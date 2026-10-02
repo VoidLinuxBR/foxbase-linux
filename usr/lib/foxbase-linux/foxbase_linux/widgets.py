@@ -12,6 +12,7 @@ CTRL_LEFT = 0x10003
 CTRL_RIGHT = 0x10004
 CTRL_PGUP = 0x10005
 CTRL_PGDN = 0x10006
+ALT_BASE = 0x20000
 
 KEYNAMES = {
     b"kEND5": CTRL_END, b"kHOM5": CTRL_HOME,
@@ -66,6 +67,7 @@ ESCAPE_KEYS = {
     "[15~": curses.KEY_F5, "[17~": curses.KEY_F6,
     "[18~": curses.KEY_F7, "[19~": curses.KEY_F8,
     "[20~": curses.KEY_F9, "[21~": curses.KEY_F10,
+    "[23~": curses.KEY_F11, "[24~": curses.KEY_F12,
     "[Z": curses.KEY_BTAB,
     "[1;5F": CTRL_END, "[4;5~": CTRL_END, "[8^": CTRL_END, "[4^": CTRL_END,
     "[1;5H": CTRL_HOME, "[1;5~": CTRL_HOME, "[7^": CTRL_HOME,
@@ -95,6 +97,8 @@ def _read_escape(stdscr):
         stdscr.nodelay(False)
     if not seq:
         return 27
+    if len(seq) == 1 and seq.isalpha():
+        return ALT_BASE + ord(seq.lower())  # Alt+letra
     return None
 
 
@@ -182,55 +186,3 @@ def line_input(stdscr, y, x, width, text="", maxlen=None, attr=None):
             return edit.text
         if result == "cancel":
             return None
-
-
-def message(stdscr, text, title="FoxBASE+", error=False):
-    h, w = stdscr.getmaxyx()
-    lines = str(text).splitlines() or [""]
-    width = min(w - 4, max(34, max(len(line) for line in lines) + 6))
-    height = min(h - 2, len(lines) + 4)
-    y = max(0, (h - height) // 2)
-    x = max(0, (w - width) // 2)
-
-    attr = curses.color_pair(ui.C_ERROR) if error else None
-    ui.box(stdscr, y, x, height, width, title, attr=attr, clear=True)
-    for row, line in enumerate(lines[:height - 4]):
-        ui.put(stdscr, y + 1 + row, x + 3, line[:width - 6])
-    hint = " Press any key "
-    ui.put(stdscr, y + height - 2, x + (width - len(hint)) // 2, hint,
-           curses.color_pair(ui.C_REVERSE))
-    curses.curs_set(0)
-    stdscr.refresh()
-    while read_key(stdscr) in (None, curses.KEY_RESIZE):
-        pass
-
-
-def prompt(stdscr, label, default="", title="FoxBASE+", maxlen=None):
-    """Caixa de diálogo com um campo. Retorna str ou None (Esc)."""
-    h, w = stdscr.getmaxyx()
-    width = min(w - 4, max(56, len(label) + 6))
-    y = max(0, h // 2 - 3)
-    x = max(0, (w - width) // 2)
-    ui.box(stdscr, y, x, 6, width, title, clear=True)
-    ui.put(stdscr, y + 1, x + 3, label[:width - 6])
-    ui.put(stdscr, y + 4, x + 3, "Enter OK   Esc Cancel",
-           curses.color_pair(ui.C_DISABLED))
-    return line_input(stdscr, y + 2, x + 3, width - 6, default, maxlen)
-
-
-def confirm(stdscr, text, title="FoxBASE+"):
-    h, w = stdscr.getmaxyx()
-    width = min(w - 4, max(40, len(text) + 6))
-    y = max(0, h // 2 - 3)
-    x = max(0, (w - width) // 2)
-    ui.box(stdscr, y, x, 5, width, title, clear=True)
-    ui.put(stdscr, y + 1, x + 3, text[:width - 6])
-    ui.put(stdscr, y + 3, x + 3, "(Y/N)?", curses.color_pair(ui.C_REVERSE))
-    curses.curs_set(0)
-    stdscr.refresh()
-    while True:
-        ch = read_key(stdscr)
-        if isinstance(ch, str) and ch.upper() in ("Y", "S"):
-            return True
-        if ch == 27 or (isinstance(ch, str) and ch.upper() == "N"):
-            return False

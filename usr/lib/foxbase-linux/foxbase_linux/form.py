@@ -14,10 +14,10 @@ import curses
 from . import screen, ui
 from .dbf import DBFError
 from .fieldedit import FieldEditor
-from .widgets import (CTRL_END, is_enter, read_key)
+from .widgets import CTRL_END, CTRL_HOME, is_enter, read_key
 
-NAME_COL = 1
-VALUE_COL = 13
+NAME_COL = 0
+VALUE_COL = 11
 
 
 class RecordForm:
@@ -47,8 +47,10 @@ class RecordForm:
             record = self.dbf.records[index]
             values = record["values"]
             self.deleted = record["deleted"]
+            self.app.current_record, self.app.eof = index, False
         self.deleted_changed = False
         self.editors = [FieldEditor(self.dbf, f, v) for f, v in zip(self.dbf.fields, values)]
+        self.memo_values = {}
         self.field_index = 0
         self.top = 0
 
@@ -65,8 +67,11 @@ class RecordForm:
         values = []
         for fi, editor in enumerate(self.editors):
             if not editor.editable:
-                values.append(self.dbf.records[self.index]["values"][fi]
-                              if self.index is not None else "")
+                if fi in self.memo_values:
+                    values.append(self.memo_values[fi])
+                else:
+                    values.append(self.dbf.records[self.index]["values"][fi]
+                                  if self.index is not None else "")
                 continue
             try:
                 values.append(editor.value())
@@ -90,6 +95,24 @@ class RecordForm:
         self.app.eof = False
         return True
 
+    def _edit_memo(self, editor):
+        from .editor import edit_memo
+        fi = self.field_index
+        raw = self.dbf.records[self.index]["values"][fi] if self.index is not None else ""
+        text = edit_memo(self.app, self.dbf.read_memo(raw), editor.field["name"])
+        if text is None:
+            return
+        if self.index is None:
+            if not self._commit_blank_ok():
+                return
+        new_raw = self.dbf.write_memo(text)
+        self.memo_values[fi] = new_raw
+        editor.text = self.dbf.display_value(editor.field, new_raw)
+        editor.dirty = True
+
+    def _commit_blank_ok(self):
+        return True
+
     def _error(self, text):
         curses.beep()
         self.msg = text
@@ -102,7 +125,7 @@ class RecordForm:
         try:
             editor.normalize()
         except DBFError as exc:
-            self._error(f"{exc}  (press SPACE)" if editor.kind == "D" else str(exc))
+            self._error(f"{exc} (press SPACE)")
             return False
         return True
 
@@ -148,7 +171,9 @@ class RecordForm:
                 self._load(None)
             return False
         if self.index >= self.dbf.record_count - 1:
-            return True  # EDIT: passar do último registro sai
+            self.app.eof = True  # EDIT: passar do último registro sai em EOF
+            self.exit_eof = True
+            return True
         self._load(self.index + 1)
         return False
 
@@ -160,7 +185,7 @@ class RecordForm:
         else:
             target = self.index - 1
         if target < 0:
-            curses.beep()
+            self.exit_top = True  # PgUp no primeiro registro sai do EDIT
             return
         self._load(target)
 
@@ -169,11 +194,10 @@ class RecordForm:
         stdscr = self.stdscr
         h, w = stdscr.getmaxyx()
         screen.clear(stdscr)
-        top_row = 0
+        top_row = 1
         if self.app.show_help:
-            top_row = screen.help_box(stdscr, screen.HELP_EDIT)
-        top_row += 1
-        rows = max(1, h - 2 - top_row - 1)
+            top_row = screen.help_box(stdscr, screen.HELP_EDIT, y=1)
+        rows = max(1, h - 3 - top_row)
 
         if self.field_index < self.top:
             self.top = self.field_index
@@ -181,7 +205,7 @@ class RecordForm:
             self.top = self.field_index - rows + 1
 
         cursor = None
-        maxw = w - VALUE_COL - 2
+        maxw = w - VALUE_COL - 1
         for row in range(rows):
             fi = self.top + row
             if fi >= len(self.editors):
@@ -191,19 +215,19 @@ class RecordForm:
             ui.put(stdscr, y, NAME_COL, editor.field["name"])
             active = fi == self.field_index
             cx = editor.draw(stdscr, y, VALUE_COL, maxw, active=active)
-            if editor.width > maxw:
-                ui.put(stdscr, y, VALUE_COL + maxw, "»")
             if active:
                 cursor = (y, cx)
 
         count = self.dbf.record_count
         if self.index is None:
-            info = f"Rec: {count + 1}/{count + 1}"
+            info = f"Rec: EOF/{count}"
         else:
             info = f"Rec: {self.index + 1}/{count}"
         screen.status_bar(stdscr, self.mode, self.dbf.filename, info,
                           screen.flags_text(self.app.insert_mode, self.deleted))
-        screen.message(stdscr, self.msg)
+        screen.message(stdscr, "", 2)
+        screen.message(stdscr, self.msg or "Enter a FoxBASE+ command", 1,
+                       error=self.msg_error)
         if cursor:
             curses.curs_set(1)
             try:
@@ -239,6 +263,11 @@ class RecordForm:
             elif ch in (CTRL_END, 23):  # ^End / ^W
                 if self._leave_field() and self._commit():
                     return
+            elif ch == CTRL_HOME:  # ^Home: editar memo
+                if editor.kind == "M":
+                    self._edit_memo(editor)
+                else:
+                    curses.beep()
             elif ch == 21:  # ^U
                 if self.index is None:
                     curses.beep()
@@ -250,6 +279,8 @@ class RecordForm:
                     return
             elif ch == curses.KEY_PPAGE:
                 self._prev_record()
+                if getattr(self, "exit_top", False):
+                    return
             elif is_enter(ch):
                 if (self.append and self.index is None and self.field_index == 0
                         and self._blank() and not self._dirty()):
@@ -277,4 +308,8 @@ def edit_record(app, index, mode="EDIT"):
 
 
 def append_records(app):
-    RecordForm(app, "APPEND", None).run()
+    form = RecordForm(app, "APPEND", None)
+    form.run()
+    if form.index is None:  # saiu num registro novo em branco: ponteiro em EOF
+        app.current_record = max(0, app.current_dbf.record_count - 1)
+        app.eof = True
