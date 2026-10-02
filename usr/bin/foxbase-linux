@@ -9,6 +9,10 @@
 #   Licença: MIT
 #
 #   ChangeLog:
+#   - v0.4.1 (2026-10-01): ponte com o Harbour não trava mais: se o hbrun não
+#     sobe (erro ao compilar o bridge, versão antiga do Harbour) desiste em 15s
+#     e mostra o erro do hbrun; bridge.prg compatível com Harbour 3.0 e 3.2
+#     (sem UTF8EX/hb_StrReplace obrigatórios); "Please wait ..." ao iniciar.
 #   - v0.4.0 (2026-10-01): comandos e funções do Harbour na linha de comandos:
 #     o que o FoxBASE+ não conhece (ALERT(), ACHOICE(), MEMOEDIT(), @...SAY,
 #     hb_*(), arrays {...}) é executado por um hbrun persistente (bridge.prg),

@@ -21,18 +21,20 @@
 
 #include "hbmemvar.ch"
 
-REQUEST HB_CODEPAGE_PT850
-REQUEST HB_CODEPAGE_PTISO
-REQUEST HB_CODEPAGE_UTF8EX
-REQUEST DBFCDX, DBFNTX, DBFFPT
+REQUEST DBFNTX
+
+/* Compatível com Harbour 3.0 e 3.2: funções que não existem em todas as
+   versões são chamadas por macro (Try), sem impedir o hbrun de carregar. */
 
 PROCEDURE Main( cIn, cOut )
 
    LOCAL hIn, hOut, cLine, cKey, cArg, cAlt, cCmd, cDbf
    LOCAL nRec, lEof, cBuf := "", nPos, n, cScreenBefore
 
-   hb_cdpSelect( "PT850" )
-   hb_SetTermCP( "UTF8EX" )
+   Try( 'hb_cdpSelect( "PT850" )' )
+   IF ! Try( 'hb_SetTermCP( "UTF8EX" )' )
+      Try( 'hb_SetTermCP( "UTF8" )' )
+   ENDIF
    SET SCOREBOARD OFF
    SET CONFIRM OFF
    SET DELETED OFF
@@ -65,7 +67,7 @@ PROCEDURE Main( cIn, cOut )
          CASE cKey == "QUIT"
             QUIT
          CASE cKey == "CP"
-            hb_cdpSelect( cArg )
+            Try( 'hb_cdpSelect( "' + cArg + '" )' )
          CASE cKey == "DBF"
             cDbf := cArg
          CASE cKey == "REC"
@@ -202,7 +204,7 @@ STATIC PROCEDURE SetVar( cArg )
       ENDIF
       RETURN
    OTHERWISE
-      xValue := hb_StrReplace( cValue, { "\n" => Chr( 10 ), "\\" => "\" } )
+      xValue := Unescape( cValue )
    ENDCASE
    IF __mvExist( cName )
       __mvPut( cName, xValue )
@@ -230,7 +232,7 @@ STATIC PROCEDURE SendVars( hOut )
          cValue := iif( xValue, "T", "F" )
       CASE cType == "C" .OR. cType == "M"
          cType := "C"
-         cValue := hb_StrReplace( xValue, { "\" => "\\", Chr( 10 ) => "\n", Chr( 13 ) => "" } )
+         cValue := StrTran( StrTran( StrTran( xValue, "\", "\\" ), Chr( 10 ), "\n" ), Chr( 13 ), "" )
       OTHERWISE
          LOOP
       ENDCASE
@@ -256,18 +258,64 @@ STATIC FUNCTION ScreenRow( n )
 
    LOCAL cBuf := SaveScreen( n, 0, n, MaxCol() )
    LOCAL nCells := MaxCol() + 1
-   LOCAL nSize := Int( hb_BLen( cBuf ) / nCells )
-   LOCAL cRow := "", i
+   LOCAL nSize := Int( Len( cBuf ) / nCells )
+   LOCAL cRow := "", i, nChar
 
    FOR i := 0 TO nCells - 1
       IF nSize >= 4   /* célula unicode: caractere UTF-16LE + cor + atributo */
-         cRow += hb_UChar( Bin2W( hb_BSubStr( cBuf, i * 4 + 1, 2 ) ) )
+         nChar := Bin2W( SubStr( cBuf, i * 4 + 1, 2 ) )
+         cRow += UChar( nChar )
       ELSE            /* célula VGA: caractere + cor */
-         cRow += hb_BSubStr( cBuf, i * 2 + 1, 1 )
+         cRow += SubStr( cBuf, i * 2 + 1, 1 )
       ENDIF
    NEXT
 
    RETURN cRow
+
+STATIC FUNCTION UChar( nChar )
+
+   LOCAL cChar
+
+   IF nChar < 128
+      RETURN Chr( nChar )
+   ENDIF
+   BEGIN SEQUENCE WITH {| e | Break( e ) }
+      cChar := &( "hb_UChar(" + hb_ntos( nChar ) + ")" )
+   RECOVER
+      cChar := "?"
+   END SEQUENCE
+
+   RETURN cChar
+
+STATIC FUNCTION Try( cExpr )
+
+   LOCAL lOk := .T.
+
+   BEGIN SEQUENCE WITH {| e | Break( e ) }
+      &( cExpr )
+   RECOVER
+      lOk := .F.
+   END SEQUENCE
+
+   RETURN lOk
+
+STATIC FUNCTION Unescape( cValue )
+
+   LOCAL cOut := "", i := 1, c
+
+   DO WHILE i <= Len( cValue )
+      c := SubStr( cValue, i, 1 )
+      IF c == "\" .AND. i < Len( cValue )
+         i++
+         c := SubStr( cValue, i, 1 )
+         cOut += iif( c == "n", Chr( 10 ), c )
+      ELSE
+         cOut += c
+      ENDIF
+      i++
+   ENDDO
+
+   RETURN cOut
 
 STATIC FUNCTION ReadLine( hIn, cBuf )
 
