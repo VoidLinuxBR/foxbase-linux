@@ -19,7 +19,8 @@ foxbase-linux (F12 ou Alt+letra), que só executa comandos do original.
 ## Dependências
 
 - Python 3.9+ (só biblioteca padrão)
-- Harbour com `hbmk2` (opcional — só para `DO programa`)
+- Harbour (opcional): `hbrun` para comandos e funções do Harbour no ponto,
+  `hbmk2` para `DO programa`
 
 ## Uso
 
@@ -58,6 +59,29 @@ F4  dir               F9  append
 F5  display structure F10 edit
 F12 / Alt+letra: menu do foxbase-linux       Ins: modo de inserção
 ```
+
+## Comandos e funções do Harbour
+
+Com o Harbour instalado (`hbrun` no PATH), tudo o que o FoxBASE+ não conhece é
+executado pelo Harbour, na própria linha de comandos:
+
+```text
+. ? alert("Arquivo gravado;Continuar?", {"Sim","Não"})
+. x = achoice(5, 10, 12, 30, {"Um", "Dois", "Três"})
+. @ 3,10 SAY "Escrito pelo Harbour"
+. ? hb_ntos(RecCount()), hb_DateTime()
+. REPLACE nome WITH hb_StrReplace(nome, "a", "A")
+. LIST nome FOR hb_AtI("silva", nome) > 0
+```
+
+Funciona assim: um processo `hbrun` fica rodando com o `bridge.prg`
+(`/usr/share/foxbase-linux/bridge.prg`). Cada linha que o foxbase-linux não
+reconhece vira um codeblock compilado na hora pelo Harbour (como no prompt do
+hbrun). O Harbour desenha no mesmo terminal, por cima da tela atual (ALERT,
+ACHOICE, MEMOEDIT, @...SAY/GET); o que o `?` escreve volta para a tela de
+comandos; o banco aberto, o registro atual e as variáveis de memória são
+sincronizados nos dois sentidos. Os comandos do FoxBASE+ continuam com o
+comportamento do original; sem Harbour, as mensagens do original aparecem.
 
 ## Telas cheias
 
@@ -131,6 +155,8 @@ CDOW() CMONTH() CHR() ASC() ISALPHA() ISUPPER() ISLOWER() IIF() TYPE() VERSION()
   uma linha a menos que a do original.
 - Textos do HELP são próprios (descrevem o que está implementado aqui).
 - `DO` compila o programa com o Harbour em vez de interpretar.
+- Comandos e funções do Harbour usam as regras do Harbour (larguras do `?`,
+  mensagens de erro).
 - Ainda não implementados: índices (INDEX/SEEK/FIND), várias áreas (SELECT),
   relatórios e etiquetas, @...SAY/GET e programação na linha de comandos.
 

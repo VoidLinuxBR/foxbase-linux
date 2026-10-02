@@ -2,7 +2,7 @@
 
 pkgname=foxbase-linux
 pkgdesc="FoxBASE Linux - ambiente xBase em terminal inspirado no FoxBASE+ para DOS (DBF, BROWSE, PRG)"
-pkgver=0.3.0   # = APP_VERSION (usr/lib/foxbase-linux/foxbase_linux/__init__.py); atualizar a cada release
+pkgver=0.4.0   # = APP_VERSION (usr/lib/foxbase-linux/foxbase_linux/__init__.py); atualizar a cada release
 pkgrel=1
 arch=('any')
 license=('MIT')
@@ -15,7 +15,8 @@ depends=(
 	'python3'         # >= 3.9 (curses da biblioteca padrão)
 )
 # opcionais (detectados em tempo de execução, não são dependência):
-#   harbour (hbmk2) -> compilar e rodar programas .prg (F5, DO programa)
+#   harbour (hbrun, hbmk2) -> comandos/funções do Harbour no ponto (ALERT() etc.)
+#                            e DO programa (compila com hbmk2)
 backup=()
 
 package() {

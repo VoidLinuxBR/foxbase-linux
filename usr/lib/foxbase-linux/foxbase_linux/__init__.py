@@ -24,8 +24,9 @@ Módulos:
     screen.py    caixas de navegação, barra de status, mensagens, menus de opção
     widgets.py   teclado e linha de edição
     runner.py    RUN / DO: programas externos e Harbour (hbmk2)
+    harbour.py   ponte com o Harbour (hbrun + bridge.prg) para comandos/funções
     ui.py        cores, molduras e barra de menus (curses)
 """
 
 APP_NAME = "foxbase-linux"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
