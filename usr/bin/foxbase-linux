@@ -9,6 +9,12 @@
 #   Licença: MIT
 #
 #   ChangeLog:
+#   - v0.4.0 (2026-10-01): comandos e funções do Harbour na linha de comandos:
+#     o que o FoxBASE+ não conhece (ALERT(), ACHOICE(), MEMOEDIT(), @...SAY,
+#     hb_*(), arrays {...}) é executado por um hbrun persistente (bridge.prg),
+#     desenhando por cima da tela atual; saída do ?, banco, registro atual e
+#     variáveis sincronizados nos dois sentidos. Sem Harbour, as mensagens do
+#     original continuam.
 #   - v0.3.0 (2026-10-01): comportamento reproduzido do FoxBASE+ 2.10 original,
 #     comparado tela a tela com ele rodando no DOSBox: tela de comandos (ponto
 #     fixo acima da barra de status, saída rolando, '??' na posição do cursor),

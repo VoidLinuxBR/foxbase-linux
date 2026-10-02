@@ -14,6 +14,7 @@ from .form import append_records, edit_record
 from .structure import create_structure, modify_structure
 from .editor import modify_command as edit_program
 from .helpview import show_help
+from .harbour import HarbourBridge
 
 MENU_KEY = curses.KEY_F12  # F10 é EDIT no original; o menu fica no F12 / Alt+letra
 
@@ -48,6 +49,7 @@ class FoxBaseApp:
         self.console = Console(self)
         self.command = CommandWindow(self)
         self.browser = Browser(self)
+        self.harbour = HarbourBridge(self)
 
         cmd = self.menu_command
         typed = self.menu_type
@@ -278,6 +280,14 @@ class FoxBaseApp:
         self.browser.reset()
         return True
 
+    def reload_dbf(self):
+        """Relê o banco do disco (depois de um comando executado pelo Harbour)."""
+        if self.current_dbf:
+            try:
+                self.current_dbf = DBF(self.current_dbf.filename)
+            except (OSError, DBFError):
+                pass
+
     def close_dbf(self):
         self.current_dbf = None
         self.current_dbf_path = None
@@ -325,5 +335,6 @@ class FoxBaseApp:
         self.full_screen(show_help, self, topic)
 
     def quit(self):
+        self.harbour.stop()
         self.running = False
         self.quit_message = "FoxBASE+ normal shutdown."

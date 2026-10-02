@@ -32,6 +32,9 @@ FKEY_NAMES = {curses.KEY_F2: "F2", curses.KEY_F3: "F3", curses.KEY_F4: "F4",
               curses.KEY_F8: "F8", curses.KEY_F9: "F9", curses.KEY_F10: "F10"}
 
 MAX_VARS = 256
+HARBOUR_ERRORS = ("Unrecognized command verb.", "Unrecognized phrase/keyword.",
+                  "Unrecognized phrase/keyword in command.", "Syntax error.")
+KEEP_ORIGINAL = ("Unrecognized command verb.", "Syntax error.")
 MEMORY_BYTES = 6000
 
 
@@ -199,11 +202,31 @@ class CommandWindow:
         try:
             self.dispatch(command)
         except (CommandError, ExprError) as exc:
+            # o que o FoxBASE+ não conhece vai para o Harbour (ALERT(), hb_*()...)
+            if str(exc) in HARBOUR_ERRORS:
+                errors = self.app.harbour.run(command, self._targets(command))
+                if errors == []:
+                    return
+                if errors and str(exc) not in KEEP_ORIGINAL:
+                    for error in errors:
+                        self.msg(error)
+                    return
             self.msg(str(exc))
         except DBFError as exc:
             self.msg(str(exc))
         finally:
             self.console.page_lines = None
+
+    @staticmethod
+    def _targets(command):
+        """Variáveis que o comando cria (x = ..., STORE ... TO x, y)."""
+        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:?=(?!=)", command)
+        if match:
+            return [match.group(1)]
+        match = re.match(r"^\s*STOR\w*\s+.+\s+TO\s+(.+)$", command, re.IGNORECASE)
+        if match:
+            return [n.strip() for n in match.group(1).split(",") if n.strip()]
+        return []
 
     # --------------------------------------------------------- utilidades
     def eval(self, text):
@@ -287,8 +310,13 @@ class CommandWindow:
         if command.startswith("?"):
             text = command[1:]
             self.evaluator.check(text)
-            self.out("\n")
-            self.out(self.print_values(text))
+            try:
+                values = self.print_values(text)
+            except ExprError as exc:
+                if str(exc) not in HARBOUR_ERRORS:
+                    self.out("\n")  # como no original: linha em branco antes do erro
+                raise
+            self.out("\n" + values)
             return
         if command.startswith("!"):
             app.run_shell(command[1:].strip())
