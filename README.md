@@ -77,10 +77,11 @@ executado pelo Harbour, na própria linha de comandos:
 Funciona assim: um processo `hbrun` fica rodando com o `bridge.prg`
 (`/usr/share/foxbase-linux/bridge.prg`). Cada linha que o foxbase-linux não
 reconhece vira um codeblock compilado na hora pelo Harbour (como no prompt do
-hbrun). O Harbour desenha no mesmo terminal, por cima da tela atual (ALERT,
-ACHOICE, MEMOEDIT, @...SAY/GET); o que o `?` escreve volta para a tela de
-comandos; o banco aberto, o registro atual e as variáveis de memória são
-sincronizados nos dois sentidos. Os comandos do FoxBASE+ continuam com o
+hbrun). O comando roda numa tela limpa (ALERT, ACHOICE, MEMOEDIT,
+@...SAY/GET) e, ao terminar, a tela do foxbase-linux é restaurada; se ele só
+desenhou e terminou na hora (ex.: `@ 5,10 SAY`), aparece "Press any key to
+continue ..." antes de voltar. O que o `?` escreve entra na tela de comandos;
+o banco aberto, o registro atual e as variáveis de memória são sincronizados nos dois sentidos. Os comandos do FoxBASE+ continuam com o
 comportamento do original; sem Harbour, as mensagens do original aparecem.
 
 ## Telas cheias

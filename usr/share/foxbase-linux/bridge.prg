@@ -29,7 +29,7 @@ REQUEST DBFNTX
 PROCEDURE Main( cIn, cOut )
 
    LOCAL hIn, hOut, cLine, cKey, cArg, cAlt, cCmd, cDbf
-   LOCAL nRec, lEof, cBuf := "", nPos, n, cScreenBefore
+   LOCAL nRec, lEof, cBuf := "", nPos, n, cScreenBefore, lClean, nStart
 
    Try( 'hb_cdpSelect( "PT850" )' )
    IF ! Try( 'hb_SetTermCP( "UTF8EX" )' )
@@ -51,6 +51,7 @@ PROCEDURE Main( cIn, cOut )
       cAlt := ""
       cCmd := NIL
       cDbf := NIL
+      lClean := .F.
       nRec := 0
       lEof := .F.
       DO WHILE .T.
@@ -86,6 +87,11 @@ PROCEDURE Main( cIn, cOut )
             DispOutAt( n, 0, PadR( SubStr( cArg, At( " ", cArg ) + 1 ), MaxCol() + 1 ) )
          CASE cKey == "POS"
             SetPos( Val( hb_TokenGet( cArg, 1 ) ), Val( hb_TokenGet( cArg, 2 ) ) )
+         CASE cKey == "CLEAN"
+            /* tela limpa: o comando roda numa tela vazia e o foxbase-linux
+               restaura a tela dele depois */
+            lClean := .T.
+            CLS
          CASE cKey == "OUT"
             cAlt := cArg
          CASE cKey == "CMD"
@@ -115,6 +121,7 @@ PROCEDURE Main( cIn, cOut )
          SET CONSOLE OFF
       ENDIF
 
+      nStart := Seconds()
       Exec( cCmd, hOut )
 
       SET CONSOLE ON
@@ -130,7 +137,16 @@ PROCEDURE Main( cIn, cOut )
          FWrite( hOut, "REC " + hb_ntos( RecNo() ) + " " + iif( Eof(), "1", "0" ) + hb_eol() )
       ENDIF
       SendVars( hOut )
-      IF !( ScreenText() == cScreenBefore )
+      IF lClean
+         /* o comando desenhou na tela (@...SAY, AChoice deixada na tela...)
+            e terminou na hora, sem esperar tecla: espera antes de voltar */
+         IF !( ScreenText() == cScreenBefore ) .AND. Seconds() - nStart < 0.5
+            SET CONSOLE ON
+            DispOutAt( MaxRow(), 0, PadR( "Press any key to continue ...", MaxCol() + 1 ) )
+            Inkey( 0 )
+         ENDIF
+         CLS
+      ELSEIF !( ScreenText() == cScreenBefore )
          FOR n := 0 TO MaxRow()
             FWrite( hOut, "SCR " + hb_ntos( n ) + " " + RTrim( ScreenRow( n ) ) + hb_eol() )
          NEXT
