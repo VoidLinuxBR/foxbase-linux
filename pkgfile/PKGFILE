@@ -13,10 +13,8 @@ md5sums=('SKIP')
 makedepends=()
 depends=(
 	'python3'         # >= 3.9 (curses da biblioteca padrão)
+	'harbour-bin'     # hbrun (comandos/funções do Harbour no ponto) e hbmk2 (DO programa)
 )
-# opcionais (detectados em tempo de execução, não são dependência):
-#   harbour (hbrun, hbmk2) -> comandos/funções do Harbour no ponto (ALERT() etc.)
-#                            e DO programa (compila com hbmk2)
 backup=()
 
 package() {
