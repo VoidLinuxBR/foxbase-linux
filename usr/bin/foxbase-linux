@@ -9,6 +9,9 @@
 #   Licença: MIT
 #
 #   ChangeLog:
+#   - v0.4.2 (2026-10-02): comandos do Harbour rodam em tela limpa; ao terminar a
+#     tela do foxbase-linux é restaurada. Se o comando só desenhou e terminou na
+#     hora (@...SAY), mostra "Press any key to continue ..." antes de voltar.
 #   - v0.4.1 (2026-10-01): ponte com o Harbour não trava mais: se o hbrun não
 #     sobe (erro ao compilar o bridge, versão antiga do Harbour) desiste em 15s
 #     e mostra o erro do hbrun; bridge.prg compatível com Harbour 3.0 e 3.2

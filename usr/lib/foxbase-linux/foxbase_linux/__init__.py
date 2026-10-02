@@ -29,4 +29,4 @@ Módulos:
 """
 
 APP_NAME = "foxbase-linux"
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"

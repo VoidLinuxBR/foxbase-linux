@@ -2,9 +2,9 @@
 (ALERT(), ACHOICE(), MEMOEDIT(), @...SAY, hb_*() ...) são executados por um
 processo hbrun que fica rodando com o bridge.prg.
 
-O processo usa o mesmo terminal: durante a chamada ele desenha direto na tela
-(a tela atual do foxbase-linux é repassada antes, para o ALERT aparecer por
-cima dela) e lê o teclado. O que o '?' escreve volta por um arquivo
+O processo usa o mesmo terminal: o comando roda numa tela limpa, lendo o
+teclado; se desenhou algo e terminou na hora (ex.: @...SAY), espera uma tecla
+("Press any key to continue ..."); depois a tela do foxbase-linux é restaurada. O que o '?' escreve volta por um arquivo
 (SET ALTERNATE) e entra na tela de comandos; o banco, o registro atual e as
 variáveis de memória são sincronizados nos dois sentidos a cada comando.
 """
@@ -22,7 +22,7 @@ import time
 from datetime import date
 from pathlib import Path
 
-from . import screen, settings, ui
+from . import screen, settings
 from .expr import Num, type_letter
 
 # codepage do DBF -> codepage do Harbour
@@ -215,15 +215,18 @@ class HarbourBridge:
         for name in targets:
             if name.upper() not in app.memvars:
                 lines.append(f"VAR {name.upper()} U ")
-        stdscr.refresh()
-        for row, text in enumerate(ui.snapshot(range(h))):
-            lines.append(f"SCR {row} {self._enc(text)}")
-        lines.append(f"POS {h - 4} 0")
+        # o comando roda numa tela limpa; ao terminar, a tela do foxbase-linux
+        # volta como estava (o que o ? escreveu entra na tela de comandos)
+        lines.append("CLEAN 1")
+        lines.append("POS 0 0")
         lines.append(f"OUT {alt}")
         lines.append(f"CMD {self._enc(command)}")
         lines.append("END")
         _keypad("rmkx")  # setas no modo normal (ESC [ C), que o Harbour entende
         try:
+            # limpa o terminal de verdade: o Harbour só redesenha o que mudou
+            # na cópia interna dele (que já está limpa)
+            os.write(1, b"\033[0m\033[2J\033[H")
             os.write(self.wfd, ("\n".join(lines) + "\n").encode("latin-1"))
             reply = self._read_reply()
         except OSError:
