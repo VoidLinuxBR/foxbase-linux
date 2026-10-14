@@ -1,8 +1,9 @@
+#!/usr/bin/env bash
 # Maintainer: Vilmar Catafesta <vcatafesta@gmail.com>
 
 pkgname=foxbase-linux
 pkgdesc="FoxBASE Linux - ambiente xBase em terminal inspirado no FoxBASE+ para DOS (DBF, BROWSE, PRG)"
-pkgver=0.4.2   # = APP_VERSION (usr/lib/foxbase-linux/foxbase_linux/__init__.py); atualizar a cada release
+pkgver=0.4.2 # = APP_VERSION (usr/lib/foxbase-linux/foxbase_linux/__init__.py); atualizar a cada release
 pkgrel=1
 arch=('any')
 license=('MIT')
@@ -12,8 +13,8 @@ source=("git+${url}.git")
 md5sums=('SKIP')
 makedepends=()
 depends=(
-	'python3'         # >= 3.9 (curses da biblioteca padrão)
-	'harbour-bin'     # hbrun (comandos/funções do Harbour no ponto) e hbmk2 (DO programa)
+	'python3'     # >= 3.9 (curses da biblioteca padrão)
+	'harbour-bin' # hbrun (comandos/funções do Harbour no ponto) e hbmk2 (DO programa)
 )
 backup=()
 
@@ -44,14 +45,10 @@ package() {
 	find "${pkgdir}/usr/lib/foxbase-linux" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 	# Install license file if present
-	if [ -f "LICENSE" ]; then
-		install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
-	fi
-
+	[ -f "LICENSE" ] && install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 	# Install documentation if present
-	if [ -f "README.md" ]; then
-		install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
-	fi
+	[ -f "README.md" ] && install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+
 }
 
 pre_install() {
@@ -59,11 +56,17 @@ pre_install() {
 }
 
 post_install() {
-	log "Finalizando instalação"
+	if [ "${update:-}" = "yes" ]; then
+		log "Finalizando upgrade"
+	else
+		log "Finalizando instalação"
+	fi
+
 	echo "==> foxbase-linux instalado."
 	echo "    Iniciar:   foxbase-linux [arquivo.dbf | programa.prg]"
 	echo "    Exemplos:  /usr/share/foxbase-linux/exemplos"
 	echo "    Programas .prg (F5 / DO) precisam do Harbour (hbmk2)."
+
 }
 
 pre_upgrade() {
@@ -71,5 +74,5 @@ pre_upgrade() {
 }
 
 post_upgrade() {
-	log "Finalizando upgrade"
+	post_install
 }
